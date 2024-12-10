@@ -1,9 +1,15 @@
-use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Mutex};
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    hash::Hash,
+    sync::Mutex,
+};
 
 use raft::{
     server::{self, state::Raft},
     utils::Config,
 };
+use tracing::info;
 
 #[derive(Debug)]
 pub struct Pair<K, V>
@@ -13,6 +19,16 @@ where
 {
     pub key: K,
     pub val: V,
+}
+
+impl<K, V> Display for Pair<K, V>
+where
+    K: Eq + Hash + Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{ {:?}: {:?} }}", self.key, self.val)
+    }
 }
 
 impl<K, V> server::log::Entry for Pair<K, V>
@@ -41,10 +57,10 @@ where
 {
     pub fn init_from_conf(config: &Config) -> KVStore<K, V> {
         // load file and read
-        return KVStore {
+        KVStore {
             map: Mutex::new(HashMap::new()),
             raft: Raft::new_from_config(config),
-        };
+        }
     }
 
     pub fn insert(&mut self, key: K, value: V) {
@@ -54,7 +70,7 @@ where
 
     pub fn display(&self) {
         let map = self.map.lock().unwrap();
-        println!("{:?}", &map);
+        info!("{:?}", map);
     }
 
     pub fn delete(&self, key: K) {

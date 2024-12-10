@@ -1,5 +1,6 @@
 metadata:
   node_name: "foo"
+  node_id: 64
 services:
     raft:
         persist_file: "raft.state"

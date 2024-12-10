@@ -60,6 +60,7 @@ pub struct StoreConfig {
 #[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub node_id: u64,
     pub node_name: String,
     pub raft: RaftConfig,
     pub store: StoreConfig,
@@ -67,43 +68,49 @@ pub struct Config {
 
 pub fn parse_config(state_path: PathBuf) -> HelperErrorResult<Config> {
     let content = fs::read_to_string(state_path.as_path())?;
-    let yaml_content = YamlLoader::load_from_str(&*content).unwrap();
+    let yaml_content = YamlLoader::load_from_str(&content).unwrap();
 
-    let metadata = from_yaml_hash("metadata", yaml_content.get(0).unwrap()).unwrap();
-    let services_yaml: &Yaml = from_yaml_hash("services", yaml_content.get(0).unwrap()).unwrap();
+    let metadata = from_yaml_hash("metadata", yaml_content.first().unwrap()).unwrap();
+    let services_yaml: &Yaml = from_yaml_hash("services", yaml_content.first().unwrap()).unwrap();
     let raft_conf_yaml: &Yaml = from_yaml_hash("raft", services_yaml).unwrap();
     let store_conf_yaml: &Yaml = from_yaml_hash("store", services_yaml).unwrap();
 
     // Metadata
-    let node_name = from_yaml_hash("node_name", metadata)
-        .and_then(|yaml_string| yaml_enum_to_string(yaml_string))?;
+    let node_name = from_yaml_hash("node_name", metadata).and_then(yaml_enum_to_string)?;
+
+    let node_id: u64 = from_yaml_hash("node_id", metadata)
+        .and_then(yaml_enum_to_string)?
+        .trim()
+        .parse()
+        .unwrap();
 
     let persist_path = from_yaml_hash("persist_file", raft_conf_yaml)
-        .and_then(|persist_path| yaml_enum_to_string(persist_path))
-        .and_then(|path_str| {
-            let path = PathBuf::from(path_str);
-            Ok(path)
-        })?;
+        .and_then(yaml_enum_to_string)
+        .map(PathBuf::from)?;
+    // .and_then(|path_str| {
+    //     let path = PathBuf::from(path_str);
+    //     Ok(path)
+    // })?;
 
     let listener_addr = from_yaml_hash("listiner_addr", raft_conf_yaml)
-        .and_then(|addr_string| yaml_enum_to_string(addr_string))
+        .and_then(yaml_enum_to_string)
         .and_then(|sock_addr| {
             let sock_v4 = SocketAddrV4::from_str(&sock_addr)?;
             Ok(SocketAddr::V4(sock_v4))
         })?;
 
     let connections = from_yaml_hash("connections", raft_conf_yaml)
-        .and_then(|s| yaml_to_vec_string(s))?
+        .and_then(yaml_to_vec_string)?
         .into_iter()
         .map(|ip_string| {
             let ip_addr: &str = ip_string.as_ref();
-            return SocketAddr::V4(SocketAddrV4::from_str(ip_addr).unwrap());
+            SocketAddr::V4(SocketAddrV4::from_str(ip_addr).unwrap())
         })
         .collect();
 
     // Store Config
     let local_path_string =
-        from_yaml_hash("local_path", store_conf_yaml).and_then(|s| yaml_enum_to_string(s))?;
+        from_yaml_hash("local_path", store_conf_yaml).and_then(yaml_enum_to_string)?;
 
     let local_path = PathBuf::from(local_path_string);
 
@@ -116,12 +123,13 @@ pub fn parse_config(state_path: PathBuf) -> HelperErrorResult<Config> {
     let store_conf: StoreConfig = StoreConfig { local_path };
 
     let conf: Config = Config {
+        node_id,
         node_name,
         raft: raft_conf,
         store: store_conf,
     };
 
-    return Ok(conf);
+    Ok(conf)
 
     // return conf;
 }
@@ -133,7 +141,7 @@ fn from_yaml_hash<'a>(key: &'a str, yaml_content: &'a Yaml) -> Result<&'a Yaml, 
             let result = &val[&Yaml::String(String::from_str(key).unwrap())];
             Ok(result)
         }
-        _ => return Err(HelperErrors::ParserYamlError),
+        _ => Err(HelperErrors::ParserYamlError),
     }
 }
 
@@ -144,6 +152,8 @@ fn from_yaml_hash<'a>(key: &'a str, yaml_content: &'a Yaml) -> Result<&'a Yaml, 
 fn yaml_enum_to_string(yaml_inp: &Yaml) -> Result<String, HelperErrors> {
     if let Yaml::String(val) = yaml_inp {
         Ok(val.to_owned())
+    } else if let Yaml::Integer(val) = yaml_inp {
+        Ok(format!("{}", val))
     } else {
         Err(HelperErrors::ParserYamlError)
     }
