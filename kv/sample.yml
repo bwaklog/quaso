@@ -1,0 +1,11 @@
+metadata:
+  node_name: "foo"
+services:
+    raft:
+        persist_file: "raft.state"
+        listiner_addr: "127.0.0.1:8080"
+        connections:
+            - "127.0.0.1:6060"
+            - "127.0.0.1:7070"
+    store:
+        local_path: "./temp/"

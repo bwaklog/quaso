@@ -1,0 +1,8 @@
+[package]
+name = "kv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+raft = { path = "../raft" }
+clap = { version = "4.5.18", features = ["derive"] }
