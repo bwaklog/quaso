@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fmt::{Debug, Display},
     hash::Hash,
-    sync::Mutex,
+    sync::RwLock,
 };
 
 use raft::{
@@ -46,7 +46,7 @@ where
     K: Eq + Hash + Debug,
     V: Debug,
 {
-    pub map: Mutex<HashMap<K, V>>,
+    pub map: RwLock<HashMap<K, V>>,
     pub raft: Raft<Pair<K, V>>,
 }
 
@@ -58,23 +58,23 @@ where
     pub fn init_from_conf(config: &Config) -> KVStore<K, V> {
         // load file and read
         KVStore {
-            map: Mutex::new(HashMap::new()),
+            map: RwLock::new(HashMap::new()),
             raft: Raft::new_from_config(config),
         }
     }
 
     pub fn insert(&mut self, key: K, value: V) {
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.write().unwrap();
         map.insert(key, value);
     }
 
     pub fn display(&self) {
-        let map = self.map.lock().unwrap();
+        let map = self.map.read().unwrap();
         info!("{:?}", map);
     }
 
     pub fn delete(&self, key: K) {
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.write().unwrap();
         if let Some(_value) = map.get(&key) {
             // consensus over (key, value)
             map.remove(&key);

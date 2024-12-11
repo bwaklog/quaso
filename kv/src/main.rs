@@ -1,5 +1,8 @@
-use std::io;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::{io, thread};
 use tracing::{debug, info};
 use tracing_subscriber::fmt::time;
 use tracing_subscriber::FmtSubscriber;
@@ -26,8 +29,6 @@ fn main() {
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    println!("Hello, world!");
-
     let args = Args::parse();
     let config = parse_config(PathBuf::from(args.conf_path)).expect("failed to parse config");
 
@@ -41,7 +42,44 @@ fn main() {
         kv.display();
     }
 
-    kv.raft.tick();
+    let kv_raft = Arc::new(Mutex::new(kv.raft));
 
-    dbg!(kv.raft.state);
+    let kv_raft_clone = Arc::clone(&kv_raft);
+
+    thread::spawn(move || {
+        kv_raft_clone.lock().unwrap().tick();
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:3511").expect("failed to start a tcp stream");
+    info!("started a tcp listener at :3511");
+
+    for stream in listener.incoming() {
+        let stream = stream.unwrap();
+        let stream = Arc::new(stream);
+
+        thread::spawn(move || {
+            debug!("{:?}", stream);
+            let mut reader = BufReader::new(stream.as_ref());
+            let mut writer = BufWriter::new(stream.as_ref());
+
+            'clientloop: loop {
+                let mut buf = String::new();
+                if reader.read_line(&mut buf).is_ok() {
+                    if buf.is_empty() {
+                        // BUG: this might be wrong
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        break 'clientloop;
+                    }
+                    buf.pop();
+                    debug!("client request {}", buf);
+
+                    // basic echo testing
+                    writer
+                        .write_all(&format!("echo: {buf}\n").into_bytes())
+                        .unwrap();
+                    writer.flush().unwrap();
+                }
+            }
+        });
+    }
 }
