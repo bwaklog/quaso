@@ -54,6 +54,7 @@ pub struct RaftConfig {
 #[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
+    pub server_addr: SocketAddr,
     pub local_path: PathBuf,
 }
 
@@ -109,6 +110,12 @@ pub fn parse_config(state_path: PathBuf) -> HelperErrorResult<Config> {
         .collect();
 
     // Store Config
+    let server_addr = from_yaml_hash("server_addr", store_conf_yaml)
+        .and_then(yaml_enum_to_string)
+        .and_then(|sock_addr| {
+            let sock_v4 = SocketAddrV4::from_str(&sock_addr)?;
+            Ok(SocketAddr::V4(sock_v4))
+        })?;
     let local_path_string =
         from_yaml_hash("local_path", store_conf_yaml).and_then(yaml_enum_to_string)?;
 
@@ -120,7 +127,10 @@ pub fn parse_config(state_path: PathBuf) -> HelperErrorResult<Config> {
         connections,
     };
 
-    let store_conf: StoreConfig = StoreConfig { local_path };
+    let store_conf: StoreConfig = StoreConfig {
+        server_addr,
+        local_path,
+    };
 
     let conf: Config = Config {
         node_id,

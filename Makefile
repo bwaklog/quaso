@@ -4,6 +4,14 @@ all:
 release:
 	cargo build --release -p kv
 
+clean_state:
+	rm ./kv/tmp/*.state
+
+inspect_state:
+	xxd ./kv/tmp/state_a.state
+	xxd ./kv/tmp/raft_b.state
+	xxd ./kv/tmp/raft_c.state
+
 run:
 	./target/release/kv -c ./kv/sample.yml
 
