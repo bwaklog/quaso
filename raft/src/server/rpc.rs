@@ -13,6 +13,7 @@ use super::{
 };
 
 use std::{
+    cmp::Ordering,
     fmt::{Debug, Display},
     net::SocketAddr,
 };
@@ -184,7 +185,7 @@ where
         }
 
         // check if voted for any other candidate in the same term
-        if !vec![Some(req.candidate_id), None].contains(&state.persistent_state.voted_for)
+        if ![Some(req.candidate_id), None].contains(&state.persistent_state.voted_for)
             && req.term == state.persistent_state.node_term
         {
             warn!(
@@ -210,28 +211,34 @@ where
         // whichever log is longer is more up-to-date"
         let log_len = state.persistent_state.log.len();
         if let Some(voter_last_entry) = state.persistent_state.log.last() {
-            if voter_last_entry.term > req.last_log_term {
-                // unequal, hence entry with latter term is more up-to-date
-                warn!("Not granting vote (log not up-to-date) as voter_last_entry.term < req.last_log_term");
-                grant = false;
-            } else if voter_last_entry.term < req.last_log_term {
-                // candidate has a more up-to-date
-                debug!(
+            match voter_last_entry.term.cmp(&req.last_log_term) {
+                Ordering::Greater => {
+                    // unequal, hence entry with latter term is more up-to-date
+                    warn!("Not granting vote (log not up-to-date) as voter_last_entry.term < req.last_log_term");
+                    grant = false;
+                }
+                Ordering::Less => {
+                    // candidate has a more up-to-date
+                    debug!(
                     "Granting vote (log up-to-date) as voter_last_entry.term < req.last_log_term"
                 );
-                grant = true;
-            } else {
-                // compare lengths
-                if log_len - 1 < req.last_log_index {
-                    debug!("Granting vote (log up-to-date) based on log length as terms are equal");
                     grant = true;
-                } else {
-                    debug!("Not granting vote (log not up-to-date) based on log length as terms are equal");
+                }
+                Ordering::Equal => {
+                    // compare lengths
+                    if log_len - 1 < req.last_log_index {
+                        debug!(
+                            "Granting vote (log up-to-date) based on log length as terms are equal"
+                        );
+                        grant = true;
+                    } else {
+                        debug!("Not granting vote (log not up-to-date) based on log length as terms are equal");
+                    }
                 }
             }
         } else {
             // NOTE: not sure if this is right read the paper!!
-            if state.persistent_state.voted_for == None {
+            if state.persistent_state.voted_for.is_none() {
                 debug!("Granting vote as I have not voted for anyone yet");
                 grant = true;
             } else {
@@ -245,6 +252,10 @@ where
         if grant {
             state.persistent_state.voted_for = Some(req.candidate_id);
             state.transition_to_term(NodeRole::Follower, req.term, node_id);
+            state.volatile_state.reset_election_timeout();
+            state
+                .recieved_leader_heartbeat
+                .store(true, std::sync::atomic::Ordering::Release);
         }
 
         debug!("{:?}", state.volatile_state.node_type);
@@ -265,7 +276,9 @@ where
         let mut state = state.lock().await;
 
         // Reply falses if term < current term (5.1)
-        if req.term < state.persistent_state.node_term {
+        if req.term < state.persistent_state.node_term
+            && state.volatile_state.node_type == NodeRole::Leader
+        {
             warn!(
                 "Reject AppendEntries as req.term {} < current Term {}",
                 req.term, state.persistent_state.node_term
@@ -325,11 +338,11 @@ where
         // If leaderCommit > commitIndex, set commitIndex
         // = min(leaderCommit, index of last new entry)
 
-        return AppendEntriesResponse {
+        AppendEntriesResponse {
             node_id,
             term: state.persistent_state.node_term,
             success: true,
-        };
+        }
     }
 }
 

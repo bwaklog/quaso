@@ -86,12 +86,11 @@ impl<T: Entry + Debug + Display + Serialize + DeserializeOwned> PersistentState<
 
         if let Ok(f) = File::open(path.clone()).await {
             let mut writer = BufWriter::new(f);
-            writer
-                .write_all(&ser_state)
-                .await
-                .expect(&format!("failed to write persistent state to {:?}", path));
+            writer.write_all(&ser_state).await.unwrap_or_else(|_| {
+                debug!("failed to write persistent state to {:?}", path);
+            });
             let _ = writer.flush().await;
-            let _ = writer.shutdown();
+            let _ = writer.shutdown().await;
             debug!("Written raft state to disk");
         } else {
             warn!("Failed to persist raft state to disk");
@@ -115,6 +114,7 @@ pub struct VolatileState {
     pub next_index: HashMap<SocketAddr, LogIndex>,
     pub match_index: HashMap<SocketAddr, LogIndex>,
 
+    pub heartbeat_timeout: Instant,
     pub election_timeout: Instant,
     pub persist_timeout: Instant,
 }
@@ -138,15 +138,21 @@ impl VolatileState {
             last_applied: 0,
             next_index,
             match_index,
-            election_timeout: Instant::now() + time::Duration::from_secs(rng.gen_range(1..=8)),
+            heartbeat_timeout: Instant::now() + time::Duration::from_secs(rng.gen_range(1..4)),
+            election_timeout: Instant::now() + time::Duration::from_secs(rng.gen_range(4..=8)),
             persist_timeout: Instant::now() + time::Duration::from_secs(5),
         }
+    }
+
+    pub fn reset_heartbeat_timeout(&mut self) {
+        let mut rng = rand::thread_rng();
+        self.heartbeat_timeout = Instant::now() + time::Duration::from_secs(rng.gen_range(1..4));
     }
 
     #[allow(unused)]
     pub fn reset_election_timeout(&mut self) {
         let mut rng = rand::thread_rng();
-        self.election_timeout = Instant::now() + time::Duration::from_secs(rng.gen_range(1..=8));
+        self.election_timeout = Instant::now() + time::Duration::from_secs(rng.gen_range(4..=8));
     }
 
     #[allow(unused)]
@@ -231,12 +237,17 @@ where
     }
 
     pub async fn maybe_send_heartbeat(&mut self) {
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
         if state.volatile_state.node_type != NodeRole::Leader {
             warn!(
                 node_id = self.node_id,
                 "Cant send heartbeat as {:?}", state.volatile_state.node_type
             );
+            return;
+        }
+
+        if Instant::now() < state.volatile_state.heartbeat_timeout {
+            warn!(node_id = self.node_id, "Not the time to send a heartbeat");
             return;
         }
 
@@ -251,21 +262,26 @@ where
             entries: Vec::new(),
             leader_commit: 0,
         };
+
         for conn in connections.iter() {
-            let resp = Client::send(
+            if let Some(resp) = Client::send(
                 RequestPattern::AppendEntriesRPC(append_request.clone()),
                 conn.to_owned(),
             )
             .await
-            .unwrap();
-
-            let de_resp: AppendEntriesResponse = bincode::deserialize(&resp).unwrap();
-            if de_resp.success {
-                debug!("Node {} {} accepted append entry", de_resp.node_id, conn);
+            {
+                let de_resp: AppendEntriesResponse = bincode::deserialize(&resp).unwrap();
+                if de_resp.success {
+                    debug!("Node {} {} accepted append entry", de_resp.node_id, conn);
+                } else {
+                    warn!("Node {} {} rejected append entry", de_resp.node_id, conn);
+                }
             } else {
-                warn!("Node {} {} rejected append entry", de_resp.node_id, conn);
+                warn!("Node {} did not respond to the RPC", conn);
             }
         }
+
+        state.volatile_state.reset_heartbeat_timeout();
     }
 
     pub async fn maybe_commit_log_entries(&mut self) {
@@ -381,36 +397,40 @@ where
             )
             .await
             {
-                let deser_resp: ElectionVoteResponse = bincode::deserialize(&resp).unwrap();
-                debug!("response from {:?} => {:?}", conn, deser_resp);
+                if let Ok(deser_resp) = bincode::deserialize::<ElectionVoteResponse>(&resp) {
+                    debug!("response from {:?} => {:?}", conn, deser_resp);
 
-                if deser_resp.vote_granted {
-                    state.volatile_state.votes_recieved.push(deser_resp.node_id);
-                } else {
-                    if deser_resp.term >= state.persistent_state.node_term {
+                    if deser_resp.vote_granted {
+                        state.volatile_state.votes_recieved.push(deser_resp.node_id);
+                    } else if deser_resp.term >= state.persistent_state.node_term {
                         state.persistent_state.voted_for = None;
                         drop(state);
                         self.transition_to_term(NodeRole::Follower, deser_resp.term)
                             .await;
                         break;
                     }
-                }
 
-                debug!("GRANTED VOTES {:?}", state.volatile_state.votes_recieved);
+                    debug!("GRANTED VOTES {:?}", state.volatile_state.votes_recieved);
 
-                if state.volatile_state.votes_recieved.len() >= required_quorum {
-                    // can transition to leader
-                    connections.iter().for_each(|addr| {
-                        state
-                            .volatile_state
-                            .next_index
-                            .insert(addr.to_owned(), log_len);
-                        state.volatile_state.match_index.insert(addr.to_owned(), 0);
-                    });
-                    drop(state);
-                    self.transition_wrapper(NodeRole::Leader, 0).await;
-                    // send an empty append entries rpc
-                    break;
+                    if state.volatile_state.votes_recieved.len() >= required_quorum {
+                        // can transition to leader
+                        connections.iter().for_each(|addr| {
+                            state
+                                .volatile_state
+                                .next_index
+                                .insert(addr.to_owned(), log_len);
+                            state.volatile_state.match_index.insert(addr.to_owned(), 0);
+                        });
+                        drop(state);
+                        self.transition_wrapper(NodeRole::Leader, 0).await;
+                        // send an empty append entries rpc
+                        break;
+                    }
+                } else {
+                    warn!(
+                        "Node {:?} failed to write a response back to the stream!",
+                        conn
+                    );
                 }
             }
         }
@@ -490,13 +510,17 @@ where
             debug!(
                 node_id = self.node_id,
                 commited_index = %state.volatile_state.commited_index,
-                "[TICKER] NODE ROLE {:?} Voted For {:?}", state.volatile_state.node_type, state.persistent_state.voted_for
+                "[NODE {}][TICKER][NODE ROLE {:?}] @ TERM {:?} Voted For {:?}",
+                self.node_id,
+                state.volatile_state.node_type,
+                state.persistent_state.node_term,
+                state.persistent_state.voted_for
             );
 
             // u cant unlock a mutex!
             drop(state);
 
-            let sleep_time = helpers::gen_rand_election_time();
+            let sleep_time = helpers::gen_rand_heartbeat_time();
             // debug!(
             //     node_id = self.node_id,
             //     "tick with duration {:?}!", sleep_time
@@ -528,8 +552,13 @@ where
 pub mod helpers {
     use rand::Rng;
 
+    pub fn gen_rand_heartbeat_time() -> std::time::Duration {
+        let mut rng = rand::thread_rng();
+        std::time::Duration::from_secs(rng.gen_range(1..4))
+    }
+
     pub fn gen_rand_election_time() -> std::time::Duration {
         let mut rng = rand::thread_rng();
-        std::time::Duration::from_secs(rng.gen_range(1..=8))
+        std::time::Duration::from_secs(rng.gen_range(4..=8))
     }
 }
