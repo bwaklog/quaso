@@ -127,7 +127,7 @@ where
     pub node_id: NodeId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Client;
 
 #[allow(unused)]
@@ -272,7 +272,7 @@ where
         state: Arc<Mutex<State<T>>>,
         req: AppendEntriesRequest<T>,
     ) -> AppendEntriesResponse {
-        debug!("Recieved append entries from {:?}", req.leader_id);
+        debug!("Recieved append entries from {:?}", req);
         let mut state = state.lock().await;
 
         // Reply falses if term < current term (5.1)
@@ -294,10 +294,15 @@ where
         // Reply false if log doesn't contain an entry at
         // prevLogIndex whose term matches prevLogTerm (5.3)
         let log_len = state.persistent_state.log.len();
-        if log_len > 0 && state.persistent_state.log[req.prev_log_index].term != req.prev_log_term {
+        if log_len > 0
+            && req.prev_log_index <= log_len
+            && state.persistent_state.log[req.prev_log_index - 1].term != req.prev_log_term
+        {
             warn!(
-                "Reject as prevLogIndex {} for current node does not have the same prev_log_term",
-                req.prev_log_index
+                "Reject as prevLogIndex {} for current node does not have the same prev_log_term({}) vs current({})",
+                req.prev_log_index,
+                req.prev_log_term,
+                state.persistent_state.log[req.prev_log_index].term,
             );
             // reject
             return AppendEntriesResponse {
@@ -308,12 +313,13 @@ where
         }
 
         if req.term > state.persistent_state.node_term {
-            debug!(
-                "req.term {} > currentTerm {}",
-                req.term, state.persistent_state.node_term
-            );
+            // debug!(
+            //     "req.term {} > currentTerm {}",
+            //     req.term, state.persistent_state.node_term
+            // );
             state.transition_to_term(NodeRole::Follower, req.term, node_id);
-            state.persistent_state.voted_for = None;
+            // this field should be set to None?
+            state.persistent_state.voted_for = Some(req.leader_id);
         }
 
         // --- beyond this line we can start accepting
@@ -326,17 +332,29 @@ where
             .store(true, std::sync::atomic::Ordering::Release);
         state.volatile_state.reset_election_timeout();
         debug!("recieved heartbeat from {}, resetting election timeout and recieved_leader_heartbeat = Atomic true", req.leader_id);
+        state.transition_to_term(NodeRole::Follower, req.term, node_id);
 
         // NOTE: for now not replicating
 
         // If an existing entry conflicts with a new one (
         // same index but different terms), delete the existing
         // entry and all that follow it (5.3)
+        let log_len = state.persistent_state.log.len();
+        let log_offset_index = req.prev_log_index;
+        let new_log_size = req.entries.len() + log_offset_index;
 
-        // Append any new entries not already in the log
+        if new_log_size <= log_len {
+            // we need to rewrite over log entries
+            state.persistent_state.log.truncate(log_offset_index);
+            state.persistent_state.log.extend(req.entries.clone());
+        } else {
+            // Append any new entries not already in the log
+            state.persistent_state.log.extend(req.entries.clone());
+        }
 
         // If leaderCommit > commitIndex, set commitIndex
         // = min(leaderCommit, index of last new entry)
+        // NOTE: need to write commit logic on leaders
 
         AppendEntriesResponse {
             node_id,
@@ -361,70 +379,56 @@ where
 
         tokio::spawn(async move {
             loop {
-                // let mut state = state.lock().await;
-
-                // debug!("[RAFT SERVER] About to modify state");
-
-                // match state.volatile_state.node_type {
-                //     NodeType::Follower => {
-                //         state.transition(NodeType::Candidate, 0, node_id);
-                //     }
-                //     NodeType::Candidate => {
-                //         state.transition(NodeType::Leader, 0, node_id);
-                //     }
-                //     NodeType::Leader => {
-                //         state.transition(NodeType::Follower, 0, node_id);
-                //     }
-                // }
-
-                // drop(state);
-
-                // let sleep_time = helpers::gen_rand_election_time();
-                // tokio::time::sleep(time::Duration::from_secs(5)).await;
-
                 if let Ok((mut stream, _)) = listener.accept().await {
                     let mut buf: Vec<u8> = Vec::new();
+                    let mut temp: Vec<u8> = Vec::new();
 
                     // request coming in are going to be serialized to
                     // Vec<u8>. This can easily be deserialized into the
                     // specific RequestPattern<T>
 
-                    if stream.read_buf(&mut buf).await.is_ok() {
-                        if !buf.is_empty() {
-                            let req: RequestPattern<T> = bincode::deserialize(&buf).unwrap();
-                            // debug!("DESERIALIZED REQU {:?} => {:?}", buf, req);
-                            match req {
-                                RequestPattern::PingRPC(req) => {
-                                    let resp =
-                                        Server::ping_node(node_id, Arc::clone(&state), req).await;
-                                    let ser_resp = bincode::serialize(&resp).unwrap();
-                                    stream.write_all(&ser_resp).await.unwrap();
-                                    stream.flush().await.unwrap();
-                                }
-                                RequestPattern::RequestVoteRPC(req) => {
-                                    let resp =
-                                        Server::request_vote(node_id, Arc::clone(&state), req)
-                                            .await;
-                                    let ser_resp = bincode::serialize(&resp).unwrap();
-                                    stream.write_all(&ser_resp).await.unwrap();
-                                    stream.flush().await.unwrap();
-                                }
-                                RequestPattern::AppendEntriesRPC(req) => {
-                                    let resp =
-                                        Server::append_entries(node_id, Arc::clone(&state), req)
-                                            .await;
-                                    let ser_resp = bincode::serialize(&resp).unwrap();
-                                    stream.write_all(&ser_resp).await.unwrap();
-                                    stream.flush().await.unwrap();
-                                }
+                    loop {
+                        if stream.read_buf(&mut temp).await.is_ok() {
+                            // debug!("recieved {:?}", temp);
+                            if temp.is_empty() {
+                                break;
+                            }
+                            buf.extend(temp.clone());
+                            temp.clear();
+                        } else {
+                            warn!("failed to read stream {:?}", stream);
+                        }
+                    }
+
+                    if !buf.is_empty() {
+                        let req: RequestPattern<T> = bincode::deserialize(&buf).unwrap();
+                        // debug!("DESERIALIZED REQU {:?} => {:?}", buf, req);
+                        match req {
+                            RequestPattern::PingRPC(req) => {
+                                let resp =
+                                    Server::ping_node(node_id, Arc::clone(&state), req).await;
+                                let ser_resp = bincode::serialize(&resp).unwrap();
+                                stream.write_all(&ser_resp).await.unwrap();
+                                stream.flush().await.unwrap();
+                            }
+                            RequestPattern::RequestVoteRPC(req) => {
+                                let resp =
+                                    Server::request_vote(node_id, Arc::clone(&state), req).await;
+                                let ser_resp = bincode::serialize(&resp).unwrap();
+                                stream.write_all(&ser_resp).await.unwrap();
+                                stream.flush().await.unwrap();
+                            }
+                            RequestPattern::AppendEntriesRPC(req) => {
+                                let resp =
+                                    Server::append_entries(node_id, Arc::clone(&state), req).await;
+                                let ser_resp = bincode::serialize(&resp).unwrap();
+                                stream.write_all(&ser_resp).await.unwrap();
+                                stream.flush().await.unwrap();
                             }
                         }
-                    } else {
-                        warn!("failed to read stream {:?}", stream);
                     }
+
                     let _ = stream.shutdown().await;
-                    // tokio::spawn(async move {
-                    // });
                 }
             }
         });
@@ -452,6 +456,8 @@ impl Client {
                 //     addr, ser_req
                 // );
                 stream.write_all(&ser_req).await.unwrap();
+                let _ = stream.shutdown().await;
+
                 // debug!("waiting block begin");
                 let mut buf: Vec<u8> = Vec::new();
                 if stream.read_buf(&mut buf).await.is_ok() {

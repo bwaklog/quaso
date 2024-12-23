@@ -414,6 +414,7 @@ dependencies = [
 name = "kv"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "clap",
  "raft",
  "rmp-serde",

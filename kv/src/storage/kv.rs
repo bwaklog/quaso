@@ -12,6 +12,8 @@ use raft::{
 };
 use tracing::info;
 
+use super::util::validate;
+
 ///
 /// Pair<K, V> is the most fundamental portion of this
 /// hashmap. This need not be separated out of the hashmap
@@ -26,7 +28,7 @@ where
     V: 'static + Debug + Send + Clone,
 {
     pub key: K,
-    pub val: V,
+    pub val: Option<V>,
 }
 
 impl<K, V> Clone for Pair<K, V>
@@ -42,16 +44,64 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum Operation {
     Set,
     Get,
     Delete,
+    Invalid,
 }
 
+#[derive(Clone)]
 pub struct Command<K, V> {
     pub operation: Operation,
-    pub key: K,
-    pub value: V,
+    pub key: Option<K>,
+    pub value: Option<V>,
+}
+
+impl Debug for Command<String, String> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{{ cmd: {:?}, key: {:?}, value: {:?} }}",
+            self.operation, self.key, self.value
+        )
+    }
+}
+
+impl Command<String, String> {
+    pub fn parse_command(command: String) -> Command<String, String> {
+        if let Some(res) = validate(command) {
+            match res.0 {
+                Operation::Get => Command {
+                    operation: res.0,
+                    key: Some(res.1[1].clone()),
+                    value: None,
+                },
+                Operation::Set => Command {
+                    operation: res.0,
+                    key: Some(res.1[1].clone()),
+                    value: Some(res.1[2].clone()),
+                },
+                Operation::Delete => Command {
+                    operation: res.0,
+                    key: Some(res.1[1].clone()),
+                    value: None,
+                },
+                Operation::Invalid => Command {
+                    operation: res.0,
+                    key: None,
+                    value: None,
+                },
+            }
+        } else {
+            Command {
+                operation: Operation::Invalid,
+                key: None,
+                value: None,
+            }
+        }
+    }
 }
 
 impl<K, V> Display for Pair<K, V>
@@ -72,6 +122,62 @@ where
     fn deliver(&mut self) {}
 }
 
+#[derive(Debug)]
+pub struct StorageLayer<K, V>
+where
+    K: 'static + Eq + Hash + Debug + Serialize + DeserializeOwned + Send + Clone,
+    V: 'static + Debug + Serialize + DeserializeOwned + Send + Clone,
+{
+    pub map: Mutex<HashMap<K, V>>,
+}
+
+impl<K, V> StorageLayer<K, V>
+where
+    K: 'static + Eq + Hash + Debug + Serialize + DeserializeOwned + Send + Clone,
+    V: 'static + Debug + Serialize + DeserializeOwned + Send + Clone,
+{
+    pub async fn init_default() -> StorageLayer<K, V> {
+        StorageLayer {
+            map: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub async fn insert(&mut self, key: K, value: V) {
+        let mut map = self.map.lock().await;
+        map.insert(key, value);
+    }
+
+    pub async fn get(&mut self, key: K) -> Command<K, V> {
+        let map = self.map.lock().await;
+        if let Some(value) = map.get(&key) {
+            return Command {
+                operation: Operation::Set,
+                key: Some(key),
+                value: Some(value.clone()),
+            };
+        } else {
+            return Command {
+                operation: Operation::Set,
+                key: Some(key),
+                value: None,
+            };
+        }
+    }
+
+    pub async fn display(&self) {
+        let map = self.map.lock().await;
+        info!("{:?}", map);
+    }
+
+    pub async fn delete(&self, key: K) {
+        let mut map = self.map.lock().await;
+        if let Some(_value) = map.get(&key) {
+            // consensus over (key, value)
+            map.remove(&key);
+        }
+    }
+}
+
 ///
 /// Quite literally...a hashmap behind a RwLock. Thinking of
 /// making use of [DashMap](https://docs.rs/dashmap/latest/dashmap/)
@@ -86,7 +192,7 @@ where
     K: 'static + Eq + Hash + Debug + Serialize + DeserializeOwned + Send + Clone,
     V: 'static + Debug + Serialize + DeserializeOwned + Send + Clone,
 {
-    pub map: Mutex<HashMap<K, V>>,
+    pub storage: StorageLayer<K, V>,
     pub raft: Raft<Pair<K, V>>,
 }
 
@@ -98,26 +204,53 @@ where
     pub async fn init_from_conf(config: &Config) -> KVStore<K, V> {
         // load file and read
         KVStore {
-            map: Mutex::new(HashMap::new()),
+            storage: StorageLayer::init_default().await,
             raft: Raft::new_from_config(config).await,
         }
     }
 
-    pub async fn insert(&mut self, key: K, value: V) {
-        let mut map = self.map.lock().await;
-        map.insert(key, value);
-    }
+    pub async fn handle_cmd(&mut self, cmd: Command<K, V>) -> Command<K, V> {
+        match cmd.operation {
+            // these two dont need to interact with the raft layer
+            // Opeartion::Get only interacts with the current
+            // state of the db
+            Operation::Get => {
+                return self.storage.get(cmd.key.unwrap()).await;
+            }
+            Operation::Invalid => {}
 
-    pub async fn display(&self) {
-        let map = self.map.lock().await;
-        info!("{:?}", map);
-    }
-
-    pub async fn delete(&self, key: K) {
-        let mut map = self.map.lock().await;
-        if let Some(_value) = map.get(&key) {
-            // consensus over (key, value)
-            map.remove(&key);
+            // These need to pass down the entries to the raft
+            // log for consensus before they can be applied to
+            // the state
+            Operation::Set => {
+                self.raft
+                    .append_entry(
+                        Pair {
+                            key: cmd.key.clone().unwrap(),
+                            val: cmd.value.clone(),
+                        },
+                        raft::server::log::Command::Set,
+                    )
+                    .await;
+                return cmd;
+            }
+            Operation::Delete => {
+                self.raft
+                    .append_entry(
+                        Pair {
+                            key: cmd.key.clone().unwrap(),
+                            val: None,
+                        },
+                        raft::server::log::Command::Remove,
+                    )
+                    .await;
+                return cmd;
+            }
         }
+        return Command {
+            operation: Operation::Invalid,
+            key: None,
+            value: None,
+        };
     }
 }
