@@ -275,21 +275,40 @@ where
             let mut prev_log_term = 0;
             let mut prev_log_index = 0;
 
+            // BUG: This is NOT correct
             if log_size > 0 {
                 if let Some(next_index) = state.volatile_state.next_index.get(&conn) {
                     debug!("next index for {:?} = {:?}", conn, next_index);
-                    if log_size >= next_index.to_owned() {
-                        let mut log_index = 0;
-                        if next_index > &0 {
-                            log_index = next_index - 1;
-                        }
-                        entries = state.persistent_state.log.clone()[log_index..].to_owned();
-                        prev_log_index = next_index.to_owned();
-                        prev_log_term = state.persistent_state.log[log_size - 1].term;
-                    } else {
-                        prev_log_index = next_index.to_owned();
-                        prev_log_term = state.persistent_state.log[log_size - 1].term;
+
+                    if next_index >= &2 {
+                        prev_log_index = next_index - 1; // 2 - 1 => 1
+                        let log_index = prev_log_index - 1;
+                        prev_log_term = state.persistent_state.log[log_index].term;
+                        entries = state.persistent_state.log[prev_log_index..].to_owned(); // prev_log_index - 1 onwards
                     }
+
+                    if next_index == &1 {
+                        // there are no logs replicated on followers node
+                        warn!("There are no logs replicated on followers node");
+                        prev_log_index = 0;
+                        prev_log_term = 0;
+                        entries = state.persistent_state.log[0..].to_owned();
+                    }
+
+                    // if log_size >= next_index.to_owned() {
+                    //     // here log index is is what will help us get the
+                    //     // correct prevLogIndex for the corresponding node
+                    //     let mut log_index = 0;
+                    //     if next_index > &0 {
+                    //         log_index = next_index - 1;
+                    //     }
+                    //     entries = state.persistent_state.log.clone()[log_index..].to_owned();
+                    //     prev_log_index = log_index;
+                    //     prev_log_term = state.persistent_state.log[log_index].term;
+                    // } else {
+                    //     prev_log_index = log_size;
+                    //     prev_log_term = state.persistent_state.log[log_size - 1].term;
+                    // }
                 }
             }
 
@@ -338,7 +357,8 @@ where
                 } else {
                     warn!("Node {} {} rejected append entry", de_resp.node_id, conn);
                     if let Some(next_index) = state.volatile_state.next_index.clone().get(&conn) {
-                        if next_index > &0 {
+                        // we can never let nextIndex value go below 1
+                        if next_index > &1 {
                             state
                                 .volatile_state
                                 .next_index
@@ -495,9 +515,10 @@ where
                         state.volatile_state.next_index.clear();
                         state.volatile_state.match_index.clear();
 
-                        let last_log_index = state.persistent_state.log.len() - 1;
+                        let last_log_index = state.persistent_state.log.len();
 
                         connections.iter().for_each(|addr| {
+                            // nextIndex value can NEVER be 0
                             state
                                 .volatile_state
                                 .next_index

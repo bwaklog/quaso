@@ -14,6 +14,7 @@ use super::{
 
 use std::{
     cmp::Ordering,
+    env::consts::OS,
     fmt::{Debug, Display},
     net::SocketAddr,
 };
@@ -294,17 +295,46 @@ where
         // Reply false if log doesn't contain an entry at
         // prevLogIndex whose term matches prevLogTerm (5.3)
         let log_len = state.persistent_state.log.len();
-        if log_len > 0
-            && req.prev_log_index <= log_len
-            && state.persistent_state.log[req.prev_log_index - 1].term != req.prev_log_term
-        {
+        if log_len > 0 {
+            // if the prevLogIndex is within the current log
+            // and the terms dont match
+            if req.prev_log_index <= log_len
+                && state.persistent_state.log[req.prev_log_index - 1].term != req.prev_log_term
+            {
+                warn!(
+                    "Reject as prevLogIndex {} for current node does not have the same prev_log_term({})",
+                    req.prev_log_index,
+                    req.prev_log_term
+                );
+                // reject
+                return AppendEntriesResponse {
+                    node_id,
+                    term: state.persistent_state.node_term,
+                    success: false,
+                };
+            }
+
+            // if the prevLogIndex is out of bounds of the available log
+            if req.prev_log_index > log_len {
+                warn!(
+                    "Reject as prevLogIndex {} is out of bounds of the current log. There are Inconsistencies",
+                    req.prev_log_index,
+                );
+                // reject
+                return AppendEntriesResponse {
+                    node_id,
+                    term: state.persistent_state.node_term,
+                    success: false,
+                };
+            }
+        }
+
+        // NOTE: this is redundant
+        if req.prev_log_index > log_len {
             warn!(
-                "Reject as prevLogIndex {} for current node does not have the same prev_log_term({}) vs current({})",
-                req.prev_log_index,
-                req.prev_log_term,
-                state.persistent_state.log[req.prev_log_index].term,
+                "Reject as prevLogIndex {} is out of bounds of the current log. There are inconsistentcies!",
+                req.prev_log_index
             );
-            // reject
             return AppendEntriesResponse {
                 node_id,
                 term: state.persistent_state.node_term,
@@ -341,13 +371,17 @@ where
         // entry and all that follow it (5.3)
         let log_len = state.persistent_state.log.len();
         let log_offset_index = req.prev_log_index;
-        let new_log_size = req.entries.len() + log_offset_index;
 
-        if new_log_size <= log_len {
+        let new_log_size = req.entries.len() + log_offset_index;
+        debug!("new log size {} vs old {}", new_log_size, log_len);
+
+        if new_log_size < log_len {
+            debug!("will truncaate log");
             // we need to rewrite over log entries
-            state.persistent_state.log.truncate(log_offset_index);
+            state.persistent_state.log.truncate(log_offset_index - 1);
             state.persistent_state.log.extend(req.entries.clone());
         } else {
+            debug!("appending new entries");
             // Append any new entries not already in the log
             state.persistent_state.log.extend(req.entries.clone());
         }
