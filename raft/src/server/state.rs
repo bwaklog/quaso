@@ -50,11 +50,17 @@ impl<T: Entry + Debug + Display + Serialize + DeserializeOwned> PersistentState<
         if let Ok(f) = File::open(path.clone()).await {
             debug!("Loading raft state from persistent storage");
             let mut buf = Vec::new();
+            let mut temp = Vec::new();
             let mut reader = BufReader::new(f);
-            reader
-                .read_buf(&mut buf)
-                .await
-                .expect("failed to read persistent state");
+            loop {
+                if reader.read_buf(&mut temp).await.is_ok() {
+                    if temp.is_empty() {
+                        break;
+                    }
+                    buf.extend(temp.clone());
+                    temp.clear();
+                }
+            }
             let de_ser: PersistentState<T> = bincode::deserialize(&buf).unwrap();
             debug!("state: {:?}", de_ser);
             de_ser
@@ -85,7 +91,11 @@ impl<T: Entry + Debug + Display + Serialize + DeserializeOwned> PersistentState<
         let state = self;
         let ser_state = bincode::serialize(&state).expect("failed to serialize persistent state");
 
-        if let Ok(f) = File::open(path.clone()).await {
+        // debug!("persist state {:?} => {:?}", state, ser_state);
+
+        let _ = tokio::fs::remove_file(path.clone()).await;
+
+        if let Ok(f) = File::create(path.clone()).await {
             let mut writer = BufWriter::new(f);
             writer.write_all(&ser_state).await.unwrap_or_else(|_| {
                 debug!("failed to write persistent state to {:?}", path);
@@ -284,7 +294,8 @@ where
                         prev_log_index = next_index - 1; // 2 - 1 => 1
                         let log_index = prev_log_index - 1;
                         prev_log_term = state.persistent_state.log[log_index].term;
-                        entries = state.persistent_state.log[prev_log_index..].to_owned(); // prev_log_index - 1 onwards
+                        entries = state.persistent_state.log[prev_log_index..].to_owned();
+                        // prev_log_index - 1 onwards
                     }
 
                     if next_index == &1 {
@@ -412,13 +423,14 @@ where
 
     #[allow(unused)]
     async fn try_persist_state(&self) {
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
 
         if Instant::now() > state.volatile_state.persist_timeout {
             state
                 .persistent_state
                 .persist(self.config.raft.persist_path.clone())
                 .await;
+            state.volatile_state.persist_timeout = Instant::now() + time::Duration::from_secs(5);
         }
     }
 
@@ -465,7 +477,7 @@ where
             vote_req = ElectionVoteRequest {
                 candidate_id: self.node_id,
                 term: state.persistent_state.node_term,
-                last_log_index: log_len - 1,
+                last_log_index: log_len,
                 last_log_term: last_log_entry.term,
             };
         } else {
@@ -496,11 +508,15 @@ where
             .await
             {
                 if let Ok(deser_resp) = bincode::deserialize::<ElectionVoteResponse>(&resp) {
-                    // debug!("response from {:?} => {:?}", conn, deser_resp);
+                    debug!("response from {:?} => {:?}", conn, deser_resp);
 
                     if deser_resp.vote_granted {
                         state.volatile_state.votes_recieved.push(deser_resp.node_id);
                     } else if deser_resp.term >= state.persistent_state.node_term {
+                        debug!(
+                            "node {:?} is at term {} >= {}",
+                            deser_resp.node_id, deser_resp.term, state.persistent_state.node_term
+                        );
                         state.persistent_state.voted_for = None;
                         drop(state);
                         self.transition_to_term(NodeRole::Follower, deser_resp.term)
@@ -508,7 +524,7 @@ where
                         break;
                     }
 
-                    // debug!("GRANTED VOTES {:?}", state.volatile_state.votes_recieved);
+                    debug!("GRANTED VOTES {:?}", state.volatile_state.votes_recieved);
 
                     if state.volatile_state.votes_recieved.len() >= required_quorum {
                         // can transition to leader
@@ -635,7 +651,7 @@ where
             // test pings :)
             // self.ping_nodes().await;
 
-            // self.try_persist_state().await;
+            self.try_persist_state().await;
 
             // NOTE: leader methods
             self.maybe_send_heartbeat().await; // AppendEntry RPC

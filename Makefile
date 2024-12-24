@@ -8,7 +8,7 @@ clean_state:
 	rm ./kv/tmp/*.state
 
 inspect_state:
-	xxd ./kv/tmp/state_a.state
+	xxd ./kv/tmp/raft_a.state
 	xxd ./kv/tmp/raft_b.state
 	xxd ./kv/tmp/raft_c.state
 

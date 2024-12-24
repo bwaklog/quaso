@@ -14,7 +14,6 @@ use super::{
 
 use std::{
     cmp::Ordering,
-    env::consts::OS,
     fmt::{Debug, Display},
     net::SocketAddr,
 };
@@ -143,20 +142,6 @@ where
     ) -> PingResponse {
         let state = state.lock().await;
 
-        // debug!("[RAFT SERVER][PING] About to modify state");
-
-        // match state.volatile_state.node_type {
-        //     NodeType::Follower => {
-        //         state.transition(NodeType::Candidate, 0, node_id);
-        //     }
-        //     NodeType::Candidate => {
-        //         state.transition(NodeType::Leader, 0, node_id);
-        //     }
-        //     NodeType::Leader => {
-        //         state.transition(NodeType::Follower, 0, node_id);
-        //     }
-        // }
-
         PingResponse {
             term: state.persistent_state.node_term,
             node_id,
@@ -211,6 +196,8 @@ where
         // -date. If the logs end up with the same term, then
         // whichever log is longer is more up-to-date"
         let log_len = state.persistent_state.log.len();
+
+
         if let Some(voter_last_entry) = state.persistent_state.log.last() {
             match voter_last_entry.term.cmp(&req.last_log_term) {
                 Ordering::Greater => {
@@ -227,7 +214,8 @@ where
                 }
                 Ordering::Equal => {
                     // compare lengths
-                    if log_len - 1 < req.last_log_index {
+                    debug!("current log_len {} and req.last_log_index {}", log_len, req.last_log_index);
+                    if log_len <= req.last_log_index {
                         debug!(
                             "Granting vote (log up-to-date) based on log length as terms are equal"
                         );
