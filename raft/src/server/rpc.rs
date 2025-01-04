@@ -197,7 +197,6 @@ where
         // whichever log is longer is more up-to-date"
         let log_len = state.persistent_state.log.len();
 
-
         if let Some(voter_last_entry) = state.persistent_state.log.last() {
             match voter_last_entry.term.cmp(&req.last_log_term) {
                 Ordering::Greater => {
@@ -214,7 +213,10 @@ where
                 }
                 Ordering::Equal => {
                     // compare lengths
-                    debug!("current log_len {} and req.last_log_index {}", log_len, req.last_log_index);
+                    debug!(
+                        "current log_len {} and req.last_log_index {}",
+                        log_len, req.last_log_index
+                    );
                     if log_len <= req.last_log_index {
                         debug!(
                             "Granting vote (log up-to-date) based on log length as terms are equal"
@@ -377,6 +379,9 @@ where
         // If leaderCommit > commitIndex, set commitIndex
         // = min(leaderCommit, index of last new entry)
         // NOTE: need to write commit logic on leaders
+        if req.leader_commit > state.volatile_state.commited_index {
+            state.volatile_state.commited_index = req.leader_commit;
+        }
 
         AppendEntriesResponse {
             node_id,

@@ -38,14 +38,14 @@ pub enum NodeRole {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PersistentState<T>
 where
-    T: Entry + Debug + Display,
+    T: Entry + Debug + Display + Clone,
 {
     pub node_term: NodeTerm,
     pub voted_for: Option<NodeId>,
     pub log: Vec<LogEntry<T>>,
 }
 
-impl<T: Entry + Debug + Display + Serialize + DeserializeOwned> PersistentState<T> {
+impl<T: Entry + Debug + Display + Serialize + DeserializeOwned + Clone> PersistentState<T> {
     async fn init_state(path: PathBuf) -> PersistentState<T> {
         if let Ok(f) = File::open(path.clone()).await {
             debug!("Loading raft state from persistent storage");
@@ -87,9 +87,23 @@ impl<T: Entry + Debug + Display + Serialize + DeserializeOwned> PersistentState<
         }
     }
 
-    pub async fn persist(&self, path: PathBuf) {
+    pub async fn persist(&self, path: PathBuf, commit_index: LogIndex) {
         let state = self;
-        let ser_state = bincode::serialize(&state).expect("failed to serialize persistent state");
+
+        let mut log = Vec::new();
+
+        if commit_index > 0 {
+            log = state.log[0..commit_index].to_vec();
+        }
+
+        let persist_state: PersistentState<T> = PersistentState {
+            node_term: state.node_term,
+            voted_for: state.voted_for,
+            log,
+        };
+
+        let ser_state =
+            bincode::serialize(&persist_state).expect("failed to serialize persistent state");
 
         // debug!("persist state {:?} => {:?}", state, ser_state);
 
@@ -171,13 +185,13 @@ impl VolatileState {
 }
 
 #[derive(Debug)]
-pub struct State<T: Entry + Debug + Display> {
+pub struct State<T: Entry + Debug + Display + Clone> {
     pub persistent_state: PersistentState<T>,
     pub volatile_state: VolatileState,
     pub recieved_leader_heartbeat: AtomicBool,
 }
 
-impl<T: Entry + Debug + Display> State<T> {
+impl<T: Entry + Debug + Display + Clone> State<T> {
     pub fn get_node_type(&self) -> NodeRole {
         self.volatile_state.node_type
     }
@@ -247,12 +261,21 @@ where
 
     pub async fn append_entry(&mut self, value: T, command: Command) {
         let mut state = self.state.lock().await;
+
+        if state.volatile_state.node_type != NodeRole::Leader {
+            warn!(
+                "Cannot do append entry if not a leader! Currently a {:?}",
+                state.volatile_state.node_type
+            );
+            return;
+        }
+
         let entry = LogEntry {
             command,
-            value: Some(value),
+            value,
             term: state.persistent_state.node_term,
         };
-        warn!("appending entry to raft log {:?}", entry);
+        debug!("appending entry to raft log {:?}", entry);
         state.persistent_state.log.push(entry);
     }
 
@@ -287,7 +310,7 @@ where
 
             // BUG: This is NOT correct
             if log_size > 0 {
-                if let Some(next_index) = state.volatile_state.next_index.get(&conn) {
+                if let Some(next_index) = state.volatile_state.next_index.get(conn) {
                     debug!("next index for {:?} = {:?}", conn, next_index);
 
                     if next_index >= &2 {
@@ -335,7 +358,7 @@ where
                 prev_log_index,
                 entries,
                 // NOTE: leader commit logic not handled
-                leader_commit: 0,
+                leader_commit: state.volatile_state.commited_index,
             };
 
             // debug!("Sending {:?} to {:?}", append_request, conn);
@@ -355,10 +378,7 @@ where
                     // here log_size is basically last_log_index + 1 which should
                     // be the next log entry we would want to send in the subsequent
                     // AppendEntriesRPC
-                    state
-                        .volatile_state
-                        .next_index
-                        .insert(conn.clone(), log_size.clone() + 1);
+                    state.volatile_state.next_index.insert(*conn, log_size + 1);
                     if log_size > 0 {
                         state
                             .volatile_state
@@ -367,7 +387,7 @@ where
                     }
                 } else {
                     warn!("Node {} {} rejected append entry", de_resp.node_id, conn);
-                    if let Some(next_index) = state.volatile_state.next_index.clone().get(&conn) {
+                    if let Some(next_index) = state.volatile_state.next_index.clone().get(conn) {
                         // we can never let nextIndex value go below 1
                         if next_index > &1 {
                             state
@@ -382,11 +402,23 @@ where
             }
         }
 
+        let log_size = state.persistent_state.log.len();
+
+        state
+            .volatile_state
+            .next_index
+            .insert(self.config.raft.listener_addr, log_size + 1);
+        state
+            .volatile_state
+            .match_index
+            .insert(self.config.raft.listener_addr, log_size);
+
         state.volatile_state.reset_heartbeat_timeout();
     }
 
     pub async fn maybe_commit_log_entries(&mut self) {
-        let state = self.state.lock().await;
+        let quorum_len = self.get_quorum_length();
+        let mut state = self.state.lock().await;
         if state.volatile_state.node_type != NodeRole::Leader {
             warn!(
                 node_id = self.node_id,
@@ -396,6 +428,36 @@ where
         }
 
         info!(node_id = self.node_id, "Can commit log entries as leader");
+
+        let current_commit = state.volatile_state.commited_index;
+        // let min_match_index = state.volatile_state.match_index.values().min().unwrap();
+
+        let min_match_index = state
+            .volatile_state
+            .match_index
+            .values()
+            .copied()
+            .fold(HashMap::new(), |mut map, val| {
+                map.entry(val).and_modify(|freq| *freq += 1).or_insert(1);
+                map
+            })
+            .into_iter()
+            .filter(|(_, v)| *v >= quorum_len)
+            .max_by(|x, y| x.1.cmp(&y.1));
+
+        if min_match_index.is_none() {
+            return;
+        }
+
+        let min_match_index = min_match_index.unwrap();
+
+        debug!(
+            "current commit {} vs min match index {}",
+            current_commit, min_match_index.0
+        );
+        if min_match_index.0 > current_commit {
+            state.volatile_state.commited_index = min_match_index.0.clone().to_owned();
+        }
     }
 
     pub fn get_quorum_length(&self) -> i32 {
@@ -428,7 +490,10 @@ where
         if Instant::now() > state.volatile_state.persist_timeout {
             state
                 .persistent_state
-                .persist(self.config.raft.persist_path.clone())
+                .persist(
+                    self.config.raft.persist_path.clone(),
+                    state.volatile_state.commited_index,
+                )
                 .await;
             state.volatile_state.persist_timeout = Instant::now() + time::Duration::from_secs(5);
         }
@@ -656,6 +721,7 @@ where
             // NOTE: leader methods
             self.maybe_send_heartbeat().await; // AppendEntry RPC
                                                // self.maybe_commit_log_entries().await; // CommitLogEntries RPC
+            self.maybe_commit_log_entries().await;
 
             // NOTE: follower methods
             self.maybe_transition_candidate().await;

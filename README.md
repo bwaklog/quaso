@@ -1,17 +1,15 @@
 # quaso
 
-### Checklist for raft
+## Checklist for raft
+
 - [x] Leaader Election
-    - [ ] Tests
 - [x] Persistence
-    - [ ] Tests
 - [x] Log Replication
-    - [ ] Tests
-- [ ] Leader Comits
+- [x] Leader Comits
 - [ ] State delivery mechanism
 
-_Low Priority_
-- [ ] Dynamic cluster
-- [ ] Log Compaction
+### Low Priority
 
-### Checklist for kv (pending)
+- [ ] Dynamic cluster - plan for a network registry along with discovering
+nodes in a network?
+- [ ] Log Compaction

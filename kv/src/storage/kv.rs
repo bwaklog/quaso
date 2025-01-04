@@ -150,17 +150,17 @@ where
     pub async fn get(&mut self, key: K) -> Command<K, V> {
         let map = self.map.lock().await;
         if let Some(value) = map.get(&key) {
-            return Command {
+            Command {
                 operation: Operation::Set,
                 key: Some(key),
                 value: Some(value.clone()),
-            };
+            }
         } else {
-            return Command {
+            Command {
                 operation: Operation::Set,
                 key: Some(key),
                 value: None,
-            };
+            }
         }
     }
 
