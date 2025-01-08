@@ -1,11 +1,10 @@
 //
-// A naive KVStore<K, V> which is just a wrapper over a
-// RwLock<HashMap<K, V>> type.
+// A naive KVStore which is just a wrapper over a
+// RwLock<HashMap<String, String>> type.
 //
 // Uses raft as a consensus layer : [raft](https://github.com/bwaklog/quaso/tree/main/raft)
 //
 use std::io;
-// use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::{net::TcpListener, sync::Mutex};
@@ -50,14 +49,10 @@ async fn main() {
 
     tokio::spawn(async move {
         raft_clone.lock().await.tick().await;
-
-        // let mut raft_clone = raft_clone.lock().await;
-        // raft_clone.tick().await;
     });
 
     tokio::spawn(async move {
         kv.generic_handler_interface().await;
-        // kv.start_deliver_interface().await;
     });
 
     let listener = TcpListener::bind(config.store.server_addr)
@@ -70,7 +65,6 @@ async fn main() {
         let (stream, _) = listener.accept().await.unwrap();
         let client_tx = Arc::clone(&client_tx);
 
-        // tokio::spawn(async move {
         debug!("{:?}", stream);
         let client_tx = client_tx.lock().await;
         let _ = client_tx.send(stream);

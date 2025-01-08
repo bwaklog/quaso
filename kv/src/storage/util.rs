@@ -1,11 +1,7 @@
-use tracing::debug;
-
 use super::kv::Operation;
 
 pub fn parse_opr(opr: &str) -> Operation {
     let opr = opr.trim().to_lowercase();
-
-    debug!("opr {}", opr);
 
     match opr.as_str() {
         "set" => Operation::Set,
@@ -17,7 +13,6 @@ pub fn parse_opr(opr: &str) -> Operation {
 
 pub fn validate(command: String) -> Option<(Operation, Vec<String>)> {
     let command: Vec<_> = command.trim().split(" ").collect();
-    debug!("command: {:?}", command);
 
     if command.len() == 1 {
         return None;
@@ -30,20 +25,20 @@ pub fn validate(command: String) -> Option<(Operation, Vec<String>)> {
             if command.len() != 2 {
                 return None;
             }
-            return Some((Operation::Get, return_cmd));
+            Some((Operation::Get, return_cmd))
         }
         Operation::Set => {
             if command.len() != 3 {
                 return None;
             }
-            return Some((Operation::Set, return_cmd));
+            Some((Operation::Set, return_cmd))
         }
         Operation::Delete => {
             if command.len() != 2 {
                 return None;
             }
-            return Some((Operation::Delete, return_cmd));
+            Some((Operation::Delete, return_cmd))
         }
-        Operation::Invalid => return Some((Operation::Invalid, return_cmd)),
+        Operation::Invalid => Some((Operation::Invalid, return_cmd)),
     }
 }

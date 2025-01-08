@@ -2,10 +2,10 @@
 
 ## Checklist for raft
 
-- [x] Leaader Election
+- [x] Leader Election
 - [x] Persistence
 - [x] Log Replication
-- [x] Leader Comits
+- [x] Leader Commits
 - [x] State delivery mechanism (partially tested)
 
 ### Low Priority

@@ -116,7 +116,7 @@ impl<T: Entry + Debug + Display + Serialize + DeserializeOwned + Clone> Persiste
             });
             let _ = writer.flush().await;
             let _ = writer.shutdown().await;
-            debug!("Written raft state to disk");
+            // debug!("Written raft state to disk");
         } else {
             warn!("Failed to persist raft state to disk");
         }
@@ -197,21 +197,25 @@ impl<T: Entry + Debug + Display + Clone> State<T> {
     }
 
     pub fn transition_to_term(&mut self, node_type: NodeRole, to_term: NodeTerm, node_id: NodeId) {
+        if self.volatile_state.node_type != node_type {
+            info!(
+                node_id = node_id,
+                "Transition to {:?} with term {}", node_type, node_id
+            );
+        }
         self.volatile_state.node_type = node_type;
         self.persistent_state.node_term = to_term;
-        info!(
-            node_id = node_id,
-            "Transition to {:?} with term {}", self.volatile_state.node_type, node_id
-        );
     }
 
     pub fn transition(&mut self, node_type: NodeRole, term_increase: NodeTerm, node_id: NodeId) {
+        if self.volatile_state.node_type != node_type {
+            info!(
+                node_id = node_id,
+                "Transition to {:?} with term {}", node_type, node_id
+            );
+        }
         self.volatile_state.node_type = node_type;
         self.persistent_state.node_term += term_increase;
-        info!(
-            node_id = node_id,
-            "Transition to {:?} with term {}", self.volatile_state.node_type, node_id
-        );
     }
 }
 
@@ -269,10 +273,10 @@ where
         let mut state = self.state.lock().await;
 
         if state.volatile_state.node_type != NodeRole::Leader {
-            warn!(
-                "Cannot do append entry if not a leader! Currently a {:?}",
-                state.volatile_state.node_type
-            );
+            // warn!(
+            //     "Cannot do append entry if not a leader! Currently a {:?}",
+            //     state.volatile_state.node_type
+            // );
             return;
         }
 
@@ -281,7 +285,7 @@ where
             value,
             term: state.persistent_state.node_term,
         };
-        debug!("appending entry to raft log {:?}", entry);
+        debug!("appending entry {:?} to raft log", entry);
         state.persistent_state.log.push(entry);
     }
 
@@ -300,11 +304,11 @@ where
             return;
         }
 
-        info!(node_id = self.node_id, "Can send heartbeat as leader");
+        // info!(node_id = self.node_id, "Can send heartbeat as leader");
 
         let connections = self.config.raft.connections.clone();
 
-        debug!("sending append entries to {:?}", connections);
+        // debug!("sending append entries to {:?}", connections);
         for conn in connections.iter() {
             let log_size = state.persistent_state.log.len();
             let mut entries: Vec<LogEntry<T>> = Vec::new();
@@ -317,7 +321,7 @@ where
             // BUG: This is NOT correct
             if log_size > 0 {
                 if let Some(next_index) = state.volatile_state.next_index.get(conn) {
-                    debug!("next index for {:?} = {:?}", conn, next_index);
+                    // debug!("next index for {:?} = {:?}", conn, next_index);
 
                     if next_index >= &2 {
                         prev_log_index = next_index - 1; // 2 - 1 => 1
@@ -329,7 +333,7 @@ where
 
                     if next_index == &1 {
                         // there are no logs replicated on followers node
-                        warn!("There are no logs replicated on followers node");
+                        // warn!("There are no logs replicated on followers node");
                         prev_log_index = 0;
                         prev_log_term = 0;
                         entries = state.persistent_state.log[0..].to_owned();
@@ -352,10 +356,10 @@ where
                 }
             }
 
-            debug!(
-                "TO: {:?} | prev_log_index {}, prev_log_term {}, entries {:?}",
-                conn, prev_log_index, prev_log_term, entries
-            );
+            // debug!(
+            //     "TO: {:?} | prev_log_index {}, prev_log_term {}, entries {:?}",
+            //     conn, prev_log_index, prev_log_term, entries
+            // );
 
             let append_request = AppendEntriesRequest::<T> {
                 term: state.persistent_state.node_term,
@@ -377,7 +381,7 @@ where
             {
                 let de_resp: AppendEntriesResponse = bincode::deserialize(&resp).unwrap();
                 if de_resp.success {
-                    debug!("Node {} {} accepted append entry", de_resp.node_id, conn);
+                    // debug!("Node {} {} accepted append entry", de_resp.node_id, conn);
 
                     // update next index and match index
 
@@ -392,7 +396,7 @@ where
                             .insert(conn.to_owned(), log_size.to_owned());
                     }
                 } else {
-                    warn!("Node {} {} rejected append entry", de_resp.node_id, conn);
+                    // warn!("Node {} {} rejected append entry", de_resp.node_id, conn);
                     if let Some(next_index) = state.volatile_state.next_index.clone().get(conn) {
                         // we can never let nextIndex value go below 1
                         if next_index > &1 {
@@ -404,7 +408,7 @@ where
                     }
                 }
             } else {
-                warn!("Node {} did not respond to the RPC", conn);
+                // warn!("Node {} did not respond to the RPC", conn);
             }
         }
 
@@ -426,14 +430,14 @@ where
         let quorum_len = self.get_quorum_length();
         let mut state = self.state.lock().await;
         if state.volatile_state.node_type != NodeRole::Leader {
-            warn!(
-                node_id = self.node_id,
-                "commit log entries as {:?}", state.volatile_state.node_type
-            );
+            // warn!(
+            //     node_id = self.node_id,
+            //     "commit log entries as {:?}", state.volatile_state.node_type
+            // );
             return;
         }
 
-        info!(node_id = self.node_id, "Can commit log entries as leader");
+        // info!(node_id = self.node_id, "Can commit log entries as leader");
 
         let current_commit = state.volatile_state.commited_index;
 
@@ -456,13 +460,18 @@ where
 
         let min_match_index = min_match_index.unwrap();
 
-        debug!(
-            "current commit {} vs min match index {}",
-            current_commit, min_match_index.0
-        );
+        // debug!(
+        //     "current commit {} vs min match index {}",
+        //     current_commit, min_match_index.0
+        // );
 
         if min_match_index.0 > current_commit {
             for i in current_commit..min_match_index.0 {
+                debug!(
+                    "[RAFT] Comitting and delivering {:?} at index {} to underlying application",
+                    state.persistent_state.log[i].clone(),
+                    i + 1,
+                );
                 let deliver_tx = self.deliver_tx.lock().await;
                 let _ = deliver_tx.send(state.persistent_state.log[i].clone());
             }
@@ -478,19 +487,23 @@ where
 
     pub async fn transition_to_term(&mut self, node_type: NodeRole, to_term: NodeTerm) {
         let mut state = self.state.lock().await;
-        debug!(
-            "TRANSITION {:?} to {:?} to term {:?}",
-            self.node_id, node_type, to_term
-        );
+        if state.volatile_state.node_type != node_type {
+            debug!(
+                "TRANSITION {:?} to {:?} to term {:?}",
+                self.node_id, node_type, to_term
+            );
+        }
         state.transition_to_term(node_type, to_term, self.node_id);
     }
 
     pub async fn transition_wrapper(&mut self, node_type: NodeRole, term_increase: NodeTerm) {
         let mut state = self.state.lock().await;
-        debug!(
-            "TRANSITION {:?} to {:?} term {:?} + {:?}",
-            self.node_id, node_type, state.persistent_state.node_term, term_increase
-        );
+        if state.volatile_state.node_type != node_type {
+            debug!(
+                "TRANSITION {:?} to {:?} term {:?} + {:?}",
+                self.node_id, node_type, state.persistent_state.node_term, term_increase
+            );
+        }
         state.transition(node_type, term_increase, self.node_id);
     }
 
@@ -584,15 +597,15 @@ where
             .await
             {
                 if let Ok(deser_resp) = bincode::deserialize::<ElectionVoteResponse>(&resp) {
-                    debug!("response from {:?} => {:?}", conn, deser_resp);
+                    // debug!("response from {:?} => {:?}", conn, deser_resp);
 
                     if deser_resp.vote_granted {
                         state.volatile_state.votes_recieved.push(deser_resp.node_id);
                     } else if deser_resp.term >= state.persistent_state.node_term {
-                        debug!(
-                            "node {:?} is at term {} >= {}",
-                            deser_resp.node_id, deser_resp.term, state.persistent_state.node_term
-                        );
+                        // debug!(
+                        //     "node {:?} is at term {} >= {}",
+                        //     deser_resp.node_id, deser_resp.term, state.persistent_state.node_term
+                        // );
                         state.persistent_state.voted_for = None;
                         drop(state);
                         self.transition_to_term(NodeRole::Follower, deser_resp.term)
@@ -600,7 +613,7 @@ where
                         break;
                     }
 
-                    debug!("GRANTED VOTES {:?}", state.volatile_state.votes_recieved);
+                    // debug!("GRANTED VOTES {:?}", state.volatile_state.votes_recieved);
 
                     if state.volatile_state.votes_recieved.len() >= required_quorum {
                         // can transition to leader
@@ -703,20 +716,20 @@ where
                 return;
             }
 
-            let state = self.state.lock().await;
-            debug!(
-                node_id = self.node_id,
-                commited_index = %state.volatile_state.commited_index,
-                "[NODE {}][TICKER][NODE ROLE {:?}] @ TERM {:?} Voted For {:?} | LOG {:?}",
-                self.node_id,
-                state.volatile_state.node_type,
-                state.persistent_state.node_term,
-                state.persistent_state.voted_for,
-                state.persistent_state.log
-            );
-
-            // u cant unlock a mutex!
-            drop(state);
+            // let state = self.state.lock().await;
+            // debug!(
+            //     node_id = self.node_id,
+            //     commited_index = %state.volatile_state.commited_index,
+            //     "[NODE {}][TICKER][NODE ROLE {:?}] @ TERM {:?} Voted For {:?} | LOG {:?}",
+            //     self.node_id,
+            //     state.volatile_state.node_type,
+            //     state.persistent_state.node_term,
+            //     state.persistent_state.voted_for,
+            //     state.persistent_state.log
+            // );
+            //
+            // // u cant unlock a mutex!
+            // drop(state);
 
             let sleep_time = helpers::gen_rand_heartbeat_time();
             // debug!(

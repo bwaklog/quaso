@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 use super::util::validate;
 
 ///
-/// Pair<K, V> is the most fundamental portion of this
+/// Pair is the most fundamental portion of this
 /// hashmap. This need not be separated out of the hashmap
 /// rather its being experimented with to understand how
 /// to make the raft layer apply committed logs to the
@@ -54,16 +54,6 @@ pub struct Command {
     pub key: Option<String>,
     pub value: Option<String>,
 }
-
-// impl Debug for Command<String, String> {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(
-//             f,
-//             "{{ cmd: {:?}, key: {:?}, value: {:?} }}",
-//             self.operation, self.key, self.value
-//         )
-//     }
-// }
 
 impl Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -170,21 +160,13 @@ impl StorageLayer {
         let map = self.map.lock().await;
         info!("{:?}", map);
     }
-
-    // pub async fn delete(&self, key: K) {
-    //     let mut map = self.map.lock().await;
-    //     if let Some(_value) = map.get(&key) {
-    //         // consensus over (key, value)
-    //         map.remove(&key);
-    //     }
-    // }
 }
 
 ///
 /// Quite literally...a hashmap behind a RwLock. Thinking of
 /// making use of [DashMap](https://docs.rs/dashmap/latest/dashmap/)
 ///
-/// The KVStore<K, T> uses raft for its consensus layer, by having
+/// The KVStore uses raft for its consensus layer, by having
 /// and agreement over the type Pair<K, V> defined above. The raft layer is a generic
 /// consensus layer to reach consensus over a single generic type.
 ///
@@ -251,12 +233,12 @@ impl KVStore {
         loop {
             tokio::select! {
                 Some(client_message) = client_rx.recv() => {
-                    debug!("recieved a client message");
+                    // debug!("recieved a client message");
                     self.handle_client(client_message).await;
                 }
                 Some(raft_message) = deliver_rx.recv() => {
-                    debug!("recieved a raaft message: {:?}", raft_message);
-                    debug!("[KV_STORE] Delivering {:?} to the state", raft_message);
+                    // debug!("recieved a raaft message: {:?}", raft_message);
+                    // debug!("[KV_STORE] Delivering {:?} to the state", raft_message);
                     self.apply(raft_message).await;
                 }
             }
@@ -265,7 +247,6 @@ impl KVStore {
 
     pub async fn handle_client(&mut self, stream: TcpStream) {
         let mut stream = stream;
-        // loop {
         let mut buf = Vec::new();
 
         match stream.read_buf(&mut buf).await {
@@ -284,7 +265,7 @@ impl KVStore {
                     .unwrap();
                 stream.flush().await.unwrap();
 
-                debug!("recieved {:?}", parsed);
+                // debug!("recieved {:?}", parsed);
             }
             Err(e) => {
                 warn!("{:?}", e);

@@ -89,14 +89,6 @@ where
     }
 }
 
-///
-/// [  Client  ]<---------[  Server ]
-///      |                      |
-///   encode                    |
-///      |                  encode resp
-///    network                  |
-///    interface -------> [ req handler ]
-///
 pub trait Service<T>
 where
     T: Entry + Debug + Display + Clone,
@@ -208,21 +200,21 @@ where
                 }
                 Ordering::Less => {
                     // candidate has a more up-to-date
-                    debug!(
-                    "Granting vote (log up-to-date) as voter_last_entry.term < req.last_log_term"
-                );
+                    //     debug!(
+                    //     "Granting vote (log up-to-date) as voter_last_entry.term < req.last_log_term"
+                    // );
                     grant = true;
                 }
                 Ordering::Equal => {
                     // compare lengths
-                    debug!(
-                        "current log_len {} and req.last_log_index {}",
-                        log_len, req.last_log_index
-                    );
+                    // debug!(
+                    //     "current log_len {} and req.last_log_index {}",
+                    //     log_len, req.last_log_index
+                    // );
                     if log_len <= req.last_log_index {
-                        debug!(
-                            "Granting vote (log up-to-date) based on log length as terms are equal"
-                        );
+                        // debug!(
+                        //     "Granting vote (log up-to-date) based on log length as terms are equal"
+                        // );
                         grant = true;
                     } else {
                         debug!("Not granting vote (log not up-to-date) based on log length as terms are equal");
@@ -232,13 +224,13 @@ where
         } else {
             // NOTE: not sure if this is right read the paper!!
             if state.persistent_state.voted_for.is_none() {
-                debug!("Granting vote as I have not voted for anyone yet");
+                // debug!("Granting vote as I have not voted for anyone yet");
                 grant = true;
             } else {
-                debug!(
-                    "Voted for {:?} in term {:?}",
-                    state.persistent_state.voted_for, state.persistent_state.node_term
-                );
+                // debug!(
+                //     "Voted for {:?} in term {:?}",
+                //     state.persistent_state.voted_for, state.persistent_state.node_term
+                // );
             }
         }
 
@@ -249,9 +241,13 @@ where
             state
                 .recieved_leader_heartbeat
                 .store(true, std::sync::atomic::Ordering::Release);
+            debug!(
+                "Voted for {:?} in term {}",
+                req.candidate_id, state.persistent_state.node_term
+            );
         }
 
-        debug!("{:?}", state.volatile_state.node_type);
+        // debug!("{:?}", state.volatile_state.node_type);
 
         ElectionVoteResponse {
             node_id,
@@ -266,7 +262,7 @@ where
         req: AppendEntriesRequest<T>,
         deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
     ) -> AppendEntriesResponse {
-        debug!("Recieved append entries from {:?}", req);
+        // debug!("Recieved append entries from {:?}", req);
         let mut state = state.lock().await;
 
         // Reply falses if term < current term (5.1)
@@ -345,7 +341,7 @@ where
             state.persistent_state.voted_for = Some(req.leader_id);
         }
 
-        // --- beyond this line we can start accepting
+        // beyond this we start accepting
         // the request
         // hence we can reset the election timer
         // and also check the box that we have recieved
@@ -354,7 +350,7 @@ where
             .recieved_leader_heartbeat
             .store(true, std::sync::atomic::Ordering::Release);
         state.volatile_state.reset_election_timeout();
-        debug!("recieved heartbeat from {}, resetting election timeout and recieved_leader_heartbeat = Atomic true", req.leader_id);
+        // debug!("recieved heartbeat from {}, resetting election timeout and recieved_leader_heartbeat = Atomic true", req.leader_id);
         state.transition_to_term(NodeRole::Follower, req.term, node_id);
 
         // NOTE: for now not replicating
@@ -366,15 +362,15 @@ where
         let log_offset_index = req.prev_log_index;
 
         let new_log_size = req.entries.len() + log_offset_index;
-        debug!("new log size {} vs old {}", new_log_size, log_len);
+        // debug!("new log size {} vs old {}", new_log_size, log_len);
 
         if new_log_size < log_len {
-            debug!("will truncaate log");
+            // debug!("will truncaate log");
             // we need to rewrite over log entries
             state.persistent_state.log.truncate(log_offset_index - 1);
             state.persistent_state.log.extend(req.entries.clone());
         } else {
-            debug!("appending new entries");
+            // debug!("appending new entries");
             // Append any new entries not already in the log
             state.persistent_state.log.extend(req.entries.clone());
         }
@@ -383,8 +379,15 @@ where
         // = min(leaderCommit, index of last new entry)
         // NOTE: need to write commit logic on leaders
         if req.leader_commit > state.volatile_state.commited_index {
-            for i in state.volatile_state.commited_index..req.leader_commit {}
-
+            for i in state.volatile_state.commited_index..req.leader_commit {
+                debug!(
+                    "[RAFT] Comitting and delivering {:?} at index {} to underlying application",
+                    state.persistent_state.log[i].clone(),
+                    i + 1,
+                );
+                let mut deliver_tx = deliver_tx.lock().await;
+                deliver_tx.send(state.persistent_state.log[i].clone());
+            }
             state.volatile_state.commited_index = req.leader_commit;
         }
 
@@ -511,7 +514,7 @@ impl Client {
                     None
                 }
             } else {
-                debug!("failed to establish a stream");
+                // debug!("failed to establish a stream");
                 None
             }
         } else {
