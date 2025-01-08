@@ -1,16 +1,20 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
-    hash::Hash,
+    sync::Arc,
 };
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::Mutex,
+};
 
 use raft::{
-    server::{self, state::Raft},
+    server::{self, log::LogEntry, state::Raft},
     utils::Config,
 };
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use super::util::validate;
 
@@ -22,20 +26,12 @@ use super::util::validate;
 /// state of the HashMap
 ///
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Pair<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Send + Clone,
-    V: 'static + Debug + Send + Clone,
-{
-    pub key: K,
-    pub val: Option<V>,
+pub struct Pair {
+    pub key: String,
+    pub val: Option<String>,
 }
 
-impl<K, V> Clone for Pair<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Send + Clone,
-    V: 'static + Debug + Send + Clone,
-{
+impl Clone for Pair {
     fn clone(&self) -> Self {
         Pair {
             key: self.key.clone(),
@@ -53,13 +49,23 @@ pub enum Operation {
 }
 
 #[derive(Clone)]
-pub struct Command<K, V> {
+pub struct Command {
     pub operation: Operation,
-    pub key: Option<K>,
-    pub value: Option<V>,
+    pub key: Option<String>,
+    pub value: Option<String>,
 }
 
-impl Debug for Command<String, String> {
+// impl Debug for Command<String, String> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(
+//             f,
+//             "{{ cmd: {:?}, key: {:?}, value: {:?} }}",
+//             self.operation, self.key, self.value
+//         )
+//     }
+// }
+
+impl Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -69,8 +75,8 @@ impl Debug for Command<String, String> {
     }
 }
 
-impl Command<String, String> {
-    pub fn parse_command(command: String) -> Command<String, String> {
+impl Command {
+    pub fn parse_command(command: String) -> Command {
         if let Some(res) = validate(command) {
             match res.0 {
                 Operation::Get => Command {
@@ -104,50 +110,34 @@ impl Command<String, String> {
     }
 }
 
-impl<K, V> Display for Pair<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Send + Clone,
-    V: 'static + Debug + Send + Clone,
-{
+impl Display for Pair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{{ {:?}: {:?} }}", self.key, self.val)
     }
 }
 
-impl<K, V> server::log::Entry for Pair<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Send + Clone,
-    V: 'static + Debug + Send + Clone,
-{
+impl server::log::Entry for Pair {
     fn deliver(&mut self) {}
 }
 
 #[derive(Debug)]
-pub struct StorageLayer<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Serialize + DeserializeOwned + Send + Clone,
-    V: 'static + Debug + Serialize + DeserializeOwned + Send + Clone,
-{
-    pub map: Mutex<HashMap<K, V>>,
+pub struct StorageLayer {
+    pub map: Mutex<HashMap<String, String>>,
 }
 
-impl<K, V> StorageLayer<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Serialize + DeserializeOwned + Send + Clone,
-    V: 'static + Debug + Serialize + DeserializeOwned + Send + Clone,
-{
-    pub async fn init_default() -> StorageLayer<K, V> {
+impl StorageLayer {
+    pub async fn init_default() -> StorageLayer {
         StorageLayer {
             map: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn insert(&mut self, key: K, value: V) {
+    pub async fn insert(&mut self, key: String, value: String) {
         let mut map = self.map.lock().await;
         map.insert(key, value);
     }
 
-    pub async fn get(&mut self, key: K) -> Command<K, V> {
+    pub async fn get(&mut self, key: String) -> Command {
         let map = self.map.lock().await;
         if let Some(value) = map.get(&key) {
             Command {
@@ -164,18 +154,30 @@ where
         }
     }
 
+    pub async fn set(&mut self, key: String, value: String) {
+        let mut map = self.map.lock().await;
+        map.entry(key)
+            .and_modify(|val| *val = value.clone())
+            .or_insert(value);
+    }
+
+    pub async fn delete(&mut self, key: String) {
+        let mut map = self.map.lock().await;
+        map.remove(&key);
+    }
+
     pub async fn display(&self) {
         let map = self.map.lock().await;
         info!("{:?}", map);
     }
 
-    pub async fn delete(&self, key: K) {
-        let mut map = self.map.lock().await;
-        if let Some(_value) = map.get(&key) {
-            // consensus over (key, value)
-            map.remove(&key);
-        }
-    }
+    // pub async fn delete(&self, key: K) {
+    //     let mut map = self.map.lock().await;
+    //     if let Some(_value) = map.get(&key) {
+    //         // consensus over (key, value)
+    //         map.remove(&key);
+    //     }
+    // }
 }
 
 ///
@@ -187,29 +189,111 @@ where
 /// consensus layer to reach consensus over a single generic type.
 ///
 #[derive(Debug)]
-pub struct KVStore<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Serialize + DeserializeOwned + Send + Clone,
-    V: 'static + Debug + Serialize + DeserializeOwned + Send + Clone,
-{
-    pub storage: StorageLayer<K, V>,
-    pub raft: Raft<Pair<K, V>>,
+pub struct KVStore {
+    pub storage: StorageLayer,
+    pub raft: Raft<Pair>,
+    pub deliver_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<LogEntry<Pair>>>>,
+    pub client_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<TcpStream>>>,
+    pub client_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<TcpStream>>>,
 }
 
-impl<K, V> KVStore<K, V>
-where
-    K: 'static + Eq + Hash + Debug + Serialize + DeserializeOwned + Send + Clone,
-    V: 'static + Debug + Serialize + DeserializeOwned + Send + Clone,
-{
-    pub async fn init_from_conf(config: &Config) -> KVStore<K, V> {
+impl KVStore {
+    pub async fn init_from_conf(config: &Config) -> KVStore {
         // load file and read
+
+        let (deliver_tx, deliver_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (client_tx, client_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let deliver_tx = Arc::new(Mutex::new(deliver_tx));
+        let deliver_rx = Arc::new(Mutex::new(deliver_rx));
+
         KVStore {
             storage: StorageLayer::init_default().await,
-            raft: Raft::new_from_config(config).await,
+            raft: Raft::new_from_config(config, deliver_tx).await,
+            deliver_rx,
+            client_rx: Arc::new(Mutex::new(client_rx)),
+            client_tx: Arc::new(Mutex::new(client_tx)),
         }
     }
 
-    pub async fn handle_cmd(&mut self, cmd: Command<K, V>) -> Command<K, V> {
+    pub async fn apply(&mut self, message: LogEntry<Pair>) {
+        match message.command {
+            server::log::Command::Set => {
+                self.storage
+                    .set(message.value.key, message.value.val.unwrap())
+                    .await
+            }
+            server::log::Command::Remove => {}
+        }
+    }
+
+    pub async fn start_deliver_interface(&mut self) {
+        let deliver_rx = Arc::clone(&self.deliver_rx);
+        let mut deliver_rx = deliver_rx.lock().await;
+        loop {
+            let try_read = deliver_rx.blocking_recv();
+            match try_read {
+                Some(message) => {
+                    debug!("[KV_STORE] Delivering {:?} to the state", message);
+                    self.apply(message).await;
+                }
+                None => warn!("Recieved None through deliver channel"),
+            }
+        }
+    }
+
+    pub async fn generic_handler_interface(&mut self) {
+        let deliver_rx = Arc::clone(&self.deliver_rx);
+        let mut deliver_rx = deliver_rx.lock().await;
+
+        let client_rx = Arc::clone(&self.client_rx);
+        let mut client_rx = client_rx.lock().await;
+        loop {
+            tokio::select! {
+                Some(client_message) = client_rx.recv() => {
+                    debug!("recieved a client message");
+                    self.handle_client(client_message).await;
+                }
+                Some(raft_message) = deliver_rx.recv() => {
+                    debug!("recieved a raaft message: {:?}", raft_message);
+                    debug!("[KV_STORE] Delivering {:?} to the state", raft_message);
+                    self.apply(raft_message).await;
+                }
+            }
+        }
+    }
+
+    pub async fn handle_client(&mut self, stream: TcpStream) {
+        let mut stream = stream;
+        // loop {
+        let mut buf = Vec::new();
+
+        match stream.read_buf(&mut buf).await {
+            Ok(_) => {
+                if buf.is_empty() {
+                    let _ = stream.shutdown().await;
+                    return;
+                }
+                let cmd = String::from_utf8(buf.clone()).unwrap();
+                let parsed = Command::parse_command(cmd);
+
+                let result = self.handle_cmd(parsed.clone()).await;
+                stream
+                    .write_all(format!("{:?}\n", result).as_bytes())
+                    .await
+                    .unwrap();
+                stream.flush().await.unwrap();
+
+                debug!("recieved {:?}", parsed);
+            }
+            Err(e) => {
+                warn!("{:?}", e);
+                stream.shutdown().await.unwrap();
+            }
+        }
+    }
+
+    pub async fn handle_cmd(&mut self, cmd: Command) -> Command {
         match cmd.operation {
             // these two dont need to interact with the raft layer
             // Opeartion::Get only interacts with the current
@@ -247,10 +331,10 @@ where
                 return cmd;
             }
         }
-        return Command {
+        Command {
             operation: Operation::Invalid,
             key: None,
             value: None,
-        };
+        }
     }
 }

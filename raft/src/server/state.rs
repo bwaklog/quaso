@@ -227,6 +227,7 @@ where
     // termination condition for the
     // server ticker
     pub stopped: bool,
+    pub deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
 
     // for the "rpc"
     pub server: Server<T>,
@@ -237,7 +238,10 @@ impl<T> Raft<T>
 where
     T: 'static + Entry + Debug + Display + Serialize + DeserializeOwned + Send + Clone,
 {
-    pub async fn new_from_config(config: &Config) -> Raft<T> {
+    pub async fn new_from_config(
+        config: &Config,
+        deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
+    ) -> Raft<T> {
         let state = State {
             persistent_state: PersistentState::init_state(config.raft.persist_path.clone()).await,
             volatile_state: VolatileState::init_state(config.raft.connections.clone()),
@@ -254,8 +258,10 @@ where
             server: Server {
                 state: Arc::clone(&state_ref),
                 node_id: config.node_id,
+                deliver_tx: Arc::clone(&deliver_tx),
             },
             client: Client,
+            deliver_tx,
         }
     }
 
@@ -430,7 +436,6 @@ where
         info!(node_id = self.node_id, "Can commit log entries as leader");
 
         let current_commit = state.volatile_state.commited_index;
-        // let min_match_index = state.volatile_state.match_index.values().min().unwrap();
 
         let min_match_index = state
             .volatile_state
@@ -455,7 +460,13 @@ where
             "current commit {} vs min match index {}",
             current_commit, min_match_index.0
         );
+
         if min_match_index.0 > current_commit {
+            for i in current_commit..min_match_index.0 {
+                let deliver_tx = self.deliver_tx.lock().await;
+                let _ = deliver_tx.send(state.persistent_state.log[i].clone());
+            }
+
             state.volatile_state.commited_index = min_match_index.0.clone().to_owned();
         }
     }
@@ -680,6 +691,7 @@ where
             self.node_id,
             Arc::clone(&self.state),
             self.config.raft.listener_addr,
+            self.deliver_tx.clone(),
         )
         .await;
     }

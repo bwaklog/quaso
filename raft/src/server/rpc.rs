@@ -110,6 +110,7 @@ where
         node_id: NodeId,
         state: Arc<Mutex<State<T>>>,
         req: AppendEntriesRequest<T>,
+        deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
     ) -> impl Future<Output = AppendEntriesResponse>;
     fn request_vote(
         node_id: NodeId,
@@ -125,6 +126,7 @@ where
 {
     pub state: Arc<Mutex<State<T>>>,
     pub node_id: NodeId,
+    pub deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +264,7 @@ where
         node_id: NodeId,
         state: Arc<Mutex<State<T>>>,
         req: AppendEntriesRequest<T>,
+        deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
     ) -> AppendEntriesResponse {
         debug!("Recieved append entries from {:?}", req);
         let mut state = state.lock().await;
@@ -380,6 +383,8 @@ where
         // = min(leaderCommit, index of last new entry)
         // NOTE: need to write commit logic on leaders
         if req.leader_commit > state.volatile_state.commited_index {
+            for i in state.volatile_state.commited_index..req.leader_commit {}
+
             state.volatile_state.commited_index = req.leader_commit;
         }
 
@@ -397,7 +402,12 @@ impl<T> Server<T>
 where
     T: 'static + Entry + Debug + Display + Serialize + DeserializeOwned + Send + Clone,
 {
-    pub async fn start_listener(node_id: NodeId, state: Arc<Mutex<State<T>>>, addr: SocketAddr) {
+    pub async fn start_listener(
+        node_id: NodeId,
+        state: Arc<Mutex<State<T>>>,
+        addr: SocketAddr,
+        deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
+    ) {
         let listener = TcpListener::bind(addr)
             .await
             .expect("failed to start a tcp listener for raft");
@@ -446,8 +456,13 @@ where
                                 stream.flush().await.unwrap();
                             }
                             RequestPattern::AppendEntriesRPC(req) => {
-                                let resp =
-                                    Server::append_entries(node_id, Arc::clone(&state), req).await;
+                                let resp = Server::append_entries(
+                                    node_id,
+                                    Arc::clone(&state),
+                                    req,
+                                    Arc::clone(&deliver_tx),
+                                )
+                                .await;
                                 let ser_resp = bincode::serialize(&resp).unwrap();
                                 stream.write_all(&ser_resp).await.unwrap();
                                 stream.flush().await.unwrap();

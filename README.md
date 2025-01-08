@@ -6,7 +6,7 @@
 - [x] Persistence
 - [x] Log Replication
 - [x] Leader Comits
-- [ ] State delivery mechanism
+- [x] State delivery mechanism (partially tested)
 
 ### Low Priority
 

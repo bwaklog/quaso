@@ -8,16 +8,15 @@ use std::io;
 // use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net::TcpListener, sync::Mutex};
 use tracing::field::debug;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use tracing_subscriber::fmt::time;
 use tracing_subscriber::FmtSubscriber;
 
 use clap::Parser;
 use raft::utils::parse_config;
-use storage::kv::{Command, KVStore};
+use storage::kv::KVStore;
 
 pub mod storage;
 
@@ -41,17 +40,24 @@ async fn main() {
     let args = Args::parse();
     let config = parse_config(PathBuf::from(args.conf_path)).expect("failed to parse config");
 
-    let mut kv: KVStore<String, String> = KVStore::init_from_conf(&config).await;
+    let mut kv = KVStore::init_from_conf(&config).await;
     kv.raft.start_raft_server().await;
     debug("started raft listener");
 
     let raft_clone = Arc::new(Mutex::new(kv.raft.clone()));
+
+    let client_tx = Arc::clone(&kv.client_tx);
 
     tokio::spawn(async move {
         raft_clone.lock().await.tick().await;
 
         // let mut raft_clone = raft_clone.lock().await;
         // raft_clone.tick().await;
+    });
+
+    tokio::spawn(async move {
+        kv.generic_handler_interface().await;
+        // kv.start_deliver_interface().await;
     });
 
     let listener = TcpListener::bind(config.store.server_addr)
@@ -61,42 +67,12 @@ async fn main() {
     debug!("started kv server");
 
     loop {
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let client_tx = Arc::clone(&client_tx);
 
         // tokio::spawn(async move {
         debug!("{:?}", stream);
-        loop {
-            let mut buf = Vec::new();
-
-            match stream.read_buf(&mut buf).await {
-                Ok(_) => {
-                    if buf.is_empty() {
-                        stream.shutdown().await.unwrap();
-                        break;
-                    }
-
-                    let cmd = String::from_utf8(buf.clone()).unwrap();
-                    let parsed = Command::<String, String>::parse_command(cmd);
-                    debug!("recieved {:?}", parsed);
-
-                    // let kv_temp = kv_clone_inner.deref();
-                    // let result = kv_temp.handle_cmd(parsed.clone()).await;
-
-                    let result = kv.handle_cmd(parsed.clone()).await;
-
-                    stream
-                        .write_all(format!("{:?}\n", result).as_bytes())
-                        .await
-                        .unwrap();
-                    stream.flush().await.unwrap();
-                }
-                Err(e) => {
-                    warn!("{:?}", e);
-                    stream.shutdown().await.unwrap();
-                    break;
-                }
-            }
-        }
-        // });
+        let client_tx = client_tx.lock().await;
+        let _ = client_tx.send(stream);
     }
 }
