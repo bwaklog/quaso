@@ -15,7 +15,6 @@ use super::{
 use std::{
     cmp::Ordering,
     fmt::{Debug, Display},
-    net::SocketAddr,
 };
 use std::{future::Future, sync::Arc};
 
@@ -408,10 +407,10 @@ where
     pub async fn start_listener(
         node_id: NodeId,
         state: Arc<Mutex<State<T>>>,
-        addr: SocketAddr,
+        addr: String,
         deliver_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<LogEntry<T>>>>,
     ) {
-        let listener = TcpListener::bind(addr)
+        let listener = TcpListener::bind(addr.clone())
             .await
             .expect("failed to start a tcp listener for raft");
 
@@ -490,7 +489,7 @@ impl Client {
     /// This flow is still on the drawing board :)
     pub async fn send<T: Entry + Debug + Display + Serialize + DeserializeOwned + Clone>(
         req: RequestPattern<T>,
-        addr: SocketAddr,
+        addr: String,
     ) -> Option<Vec<u8>> {
         if let Ok(ser_req) = bincode::serialize(&req) {
             // debug!("serialize_request {:?} => {:?}", req, ser_req);

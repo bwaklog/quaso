@@ -1,7 +1,6 @@
 use core::time;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -136,8 +135,8 @@ pub struct VolatileState {
     // volatile state on leader
     // to be reinitialized after
     // every election
-    pub next_index: HashMap<SocketAddr, LogIndex>,
-    pub match_index: HashMap<SocketAddr, LogIndex>,
+    pub next_index: HashMap<String, LogIndex>,
+    pub match_index: HashMap<String, LogIndex>,
 
     pub heartbeat_timeout: Instant,
     pub election_timeout: Instant,
@@ -145,13 +144,13 @@ pub struct VolatileState {
 }
 
 impl VolatileState {
-    fn init_state(conns: Vec<SocketAddr>) -> VolatileState {
-        let mut next_index: HashMap<SocketAddr, LogIndex> = HashMap::new();
-        let mut match_index: HashMap<SocketAddr, LogIndex> = HashMap::new();
+    fn init_state(conns: Vec<String>) -> VolatileState {
+        let mut next_index: HashMap<String, LogIndex> = HashMap::new();
+        let mut match_index: HashMap<String, LogIndex> = HashMap::new();
 
         for conn in conns {
-            next_index.insert(conn, 0);
-            match_index.insert(conn, 0);
+            next_index.insert(conn.clone(), 0);
+            match_index.insert(conn.clone(), 0);
         }
 
         VolatileState {
@@ -388,7 +387,10 @@ where
                     // here log_size is basically last_log_index + 1 which should
                     // be the next log entry we would want to send in the subsequent
                     // AppendEntriesRPC
-                    state.volatile_state.next_index.insert(*conn, log_size + 1);
+                    state
+                        .volatile_state
+                        .next_index
+                        .insert(conn.clone(), log_size + 1);
                     if log_size > 0 {
                         state
                             .volatile_state
@@ -417,11 +419,11 @@ where
         state
             .volatile_state
             .next_index
-            .insert(self.config.raft.listener_addr, log_size + 1);
+            .insert(self.config.raft.listener_addr.clone(), log_size + 1);
         state
             .volatile_state
             .match_index
-            .insert(self.config.raft.listener_addr, log_size);
+            .insert(self.config.raft.listener_addr.clone(), log_size);
 
         state.volatile_state.reset_heartbeat_timeout();
     }
@@ -703,7 +705,7 @@ where
         Server::start_listener(
             self.node_id,
             Arc::clone(&self.state),
-            self.config.raft.listener_addr,
+            self.config.raft.listener_addr.clone(),
             self.deliver_tx.clone(),
         )
         .await;

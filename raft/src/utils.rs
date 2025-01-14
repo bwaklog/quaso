@@ -2,7 +2,6 @@
 // commit pending tests
 
 use core::{fmt, net};
-use std::net::{SocketAddr, SocketAddrV4};
 use std::{fs, path::PathBuf, str::FromStr};
 // FIX: Handle error type for yaml
 use yaml_rust2::{Yaml, YamlLoader};
@@ -47,14 +46,14 @@ impl From<std::io::Error> for HelperErrors {
 #[derive(Debug, Clone)]
 pub struct RaftConfig {
     pub persist_path: PathBuf,
-    pub listener_addr: SocketAddr,
-    pub connections: Vec<SocketAddr>,
+    pub listener_addr: String,
+    pub connections: Vec<String>,
 }
 
 #[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
-    pub server_addr: SocketAddr,
+    pub server_addr: String,
     pub local_path: PathBuf,
 }
 
@@ -93,29 +92,29 @@ pub fn parse_config(state_path: PathBuf) -> HelperErrorResult<Config> {
     //     Ok(path)
     // })?;
 
-    let listener_addr = from_yaml_hash("listiner_addr", raft_conf_yaml)
-        .and_then(yaml_enum_to_string)
-        .and_then(|sock_addr| {
-            let sock_v4 = SocketAddrV4::from_str(&sock_addr)?;
-            Ok(SocketAddr::V4(sock_v4))
-        })?;
+    let listener_addr =
+        from_yaml_hash("listiner_addr", raft_conf_yaml).and_then(yaml_enum_to_string)?;
+    // .and_then(|sock_addr| {
+    //     let sock_v4 = SocketAddrV4::from_str(&sock_addr)?;
+    //     Ok(SocketAddr::V4(sock_v4))
+    // })?;
 
     let connections = from_yaml_hash("connections", raft_conf_yaml)
         .and_then(yaml_to_vec_string)?
         .into_iter()
-        .map(|ip_string| {
-            let ip_addr: &str = ip_string.as_ref();
-            SocketAddr::V4(SocketAddrV4::from_str(ip_addr).unwrap())
-        })
+        // .map(|ip_string| {
+        //     let ip_addr: &str = ip_string.as_ref();
+        //     SocketAddr::V4(SocketAddrV4::from_str(ip_addr).unwrap())
+        // })
         .collect();
 
     // Store Config
-    let server_addr = from_yaml_hash("server_addr", store_conf_yaml)
-        .and_then(yaml_enum_to_string)
-        .and_then(|sock_addr| {
-            let sock_v4 = SocketAddrV4::from_str(&sock_addr)?;
-            Ok(SocketAddr::V4(sock_v4))
-        })?;
+    let server_addr =
+        from_yaml_hash("server_addr", store_conf_yaml).and_then(yaml_enum_to_string)?;
+    // .and_then(|sock_addr| {
+    //     let sock_v4 = SocketAddrV4::from_str(&sock_addr)?;
+    //     Ok(SocketAddr::V4(sock_v4))
+    // })?;
     let local_path_string =
         from_yaml_hash("local_path", store_conf_yaml).and_then(yaml_enum_to_string)?;
 

@@ -1,6 +1,6 @@
 //
 // A naive KVStore which is just a wrapper over a
-// RwLock<HashMap<String, String>> type.
+// HashMap<String, String> type.
 //
 // Uses raft as a consensus layer : [raft](https://github.com/bwaklog/quaso/tree/main/raft)
 //
@@ -55,7 +55,7 @@ async fn main() {
         kv.generic_handler_interface().await;
     });
 
-    let listener = TcpListener::bind(config.store.server_addr)
+    let listener = TcpListener::bind(config.store.server_addr.clone())
         .await
         .expect("failed to start a tcp stream");
     info!("started a tcp listener at {:?}", config.store.server_addr);
