@@ -7,6 +7,7 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::{net::TcpListener, sync::Mutex};
 use tracing::field::debug;
 use tracing::{debug, info};
@@ -14,10 +15,8 @@ use tracing_subscriber::fmt::time;
 use tracing_subscriber::FmtSubscriber;
 
 use clap::Parser;
+use kv::storage::kv::KVStore;
 use raft::utils::parse_config;
-use storage::kv::KVStore;
-
-pub mod storage;
 
 #[derive(Parser, Debug)]
 pub struct Args {
@@ -52,6 +51,7 @@ async fn main() {
     });
 
     let sl = kv.storage.clone();
+    let leader_ref = kv.leader_ref.clone();
 
     tokio::spawn(async move {
         kv.generic_handler_interface().await;
@@ -64,13 +64,22 @@ async fn main() {
     debug!("started kv server");
 
     loop {
-        let (stream, _) = listener.accept().await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
         let client_tx = Arc::clone(&client_tx);
+        let leader_ref = leader_ref.clone();
         let sl_clone = sl.clone();
 
         debug!("{:?}", stream);
+
+        if leader_ref.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = stream.write_all(b"OK.").await;
+        } else {
+            let _ = stream.write_all(b"WARN. Not Leader").await;
+        }
+        let _ = stream.flush().await;
+
         tokio::spawn(async move {
-            KVStore::handle_client(stream, sl_clone, client_tx).await;
+            KVStore::handle_client(stream, sl_clone, leader_ref.clone(), client_tx).await;
         });
     }
 }

@@ -1,9 +1,6 @@
 all:
 	cargo c
 
-release:
-	cargo build --release -p kv
-
 clean_state:
 	rm ./kv/tmp/*.state
 
@@ -14,6 +11,16 @@ inspect_state:
 
 run:
 	./target/release/kv -c ./kv/sample.yml
+
+release:
+	cargo b -p kv --release
+	cargo b -p kv --bin client --release
+	cp ./target/release/kv quaso_server
+	cp ./target/release/client quaso_client
+
+clean:
+	rm quaso_server
+	rm quaso_client
 
 # now ofcourse wasm wont work using threads :P
 wasmtime_run:

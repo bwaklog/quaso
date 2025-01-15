@@ -18,6 +18,7 @@ class Command:
         stream.send(self.builder())
         recv = stream.recv(1024).decode()
         print(f"executed {recv.strip()}")
+        stream.close()
 
 class GetCommand(Command):
     def __init__(self, key: str) -> None:

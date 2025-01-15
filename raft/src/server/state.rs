@@ -232,6 +232,8 @@ where
     // for the "rpc"
     pub server: Server<T>,
     pub client: Client,
+
+    pub is_leader: Arc<AtomicBool>,
 }
 
 impl<T> Raft<T>
@@ -262,6 +264,7 @@ where
             },
             client: Client,
             deliver_tx,
+            is_leader: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -492,6 +495,13 @@ where
                 self.node_id, node_type, to_term
             );
         }
+        if node_type == NodeRole::Leader {
+            self.is_leader
+                .store(true, std::sync::atomic::Ordering::Release);
+        } else {
+            self.is_leader
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
         state.transition_to_term(node_type, to_term, self.node_id);
     }
 
@@ -502,6 +512,13 @@ where
                 "TRANSITION {:?} to {:?} term {:?} + {:?}",
                 self.node_id, node_type, state.persistent_state.node_term, term_increase
             );
+        }
+        if node_type == NodeRole::Leader {
+            self.is_leader
+                .store(true, std::sync::atomic::Ordering::Release);
+        } else {
+            self.is_leader
+                .store(false, std::sync::atomic::Ordering::Release);
         }
         state.transition(node_type, term_increase, self.node_id);
     }

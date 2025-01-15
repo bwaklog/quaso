@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -177,6 +177,8 @@ pub struct KVStore {
     pub deliver_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<LogEntry<Pair>>>>,
     pub client_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Command>>>,
     pub client_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<Command>>>,
+
+    pub leader_ref: Arc<AtomicBool>,
 }
 
 impl KVStore {
@@ -189,10 +191,14 @@ impl KVStore {
         let deliver_tx = Arc::new(Mutex::new(deliver_tx));
         let deliver_rx = Arc::new(Mutex::new(deliver_rx));
 
+        let raft = Raft::new_from_config(config, deliver_tx).await;
+        let leader_ref = Arc::clone(&raft.is_leader);
+
         KVStore {
             storage: Arc::new(Mutex::new(StorageLayer::init_default().await)),
-            raft: Raft::new_from_config(config, deliver_tx).await,
+            raft,
             deliver_rx,
+            leader_ref,
             client_rx: Arc::new(Mutex::new(client_rx)),
             client_tx: Arc::new(Mutex::new(client_tx)),
         }
@@ -238,13 +244,9 @@ impl KVStore {
         loop {
             tokio::select! {
                 Some(client_message) = client_rx.recv() => {
-                    // debug!("recieved a client message");
-                    // self.handle_client(client_message).await;
                     self.handle_cmd(client_message).await;
                 }
                 Some(raft_message) = deliver_rx.recv() => {
-                    // debug!("recieved a raaft message: {:?}", raft_message);
-                    // debug!("[KV_STORE] Delivering {:?} to the state", raft_message);
                     self.apply(raft_message).await;
                 }
             }
@@ -254,6 +256,7 @@ impl KVStore {
     pub async fn handle_client(
         stream: TcpStream,
         sl: Arc<Mutex<StorageLayer>>,
+        leader_ref: Arc<AtomicBool>,
         client_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<Command>>>,
     ) {
         let mut stream = stream;
@@ -273,16 +276,24 @@ impl KVStore {
                     if parsed.operation == Operation::Get {
                         let mut sl_handler = sl.lock().await;
                         let result = sl_handler.get(parsed.key.unwrap()).await;
-                        stream
-                            .write_all(format!("{:?}\n", result).as_bytes())
-                            .await
-                            .unwrap();
+                        let mut val = "undefined".to_owned();
+                        if let Some(temp) = result.value {
+                            val = format!("\"{}\"", temp);
+                        }
+                        stream.write_all(&val.into_bytes()).await.unwrap();
                         stream.flush().await.unwrap();
-                    // debug!("recieved {:?}", parsed);
                     } else {
                         // this affects state
-                        let tx_handler = client_tx.lock().await;
-                        let _ = tx_handler.send(parsed);
+                        if !leader_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                            let _ = stream.write(b"ERR. Not Leader").await;
+                            let _ = stream.flush().await;
+                        } else {
+                            let tx_handler = client_tx.lock().await;
+                            let _ = tx_handler.send(parsed);
+
+                            let _ = stream.write(b"OK.").await;
+                            let _ = stream.flush().await;
+                        }
                     }
                 }
                 Err(e) => {
