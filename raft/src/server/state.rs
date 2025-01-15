@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use helpers::{gen_rand_election_time, gen_rand_heartbeat_time};
-use rand::Rng;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
@@ -167,14 +166,12 @@ impl VolatileState {
     }
 
     pub fn reset_heartbeat_timeout(&mut self) {
-        let mut rng = rand::thread_rng();
-        self.heartbeat_timeout = Instant::now() + time::Duration::from_secs(rng.gen_range(1..4));
+        self.heartbeat_timeout = Instant::now() + gen_rand_heartbeat_time();
     }
 
     #[allow(unused)]
     pub fn reset_election_timeout(&mut self) {
-        let mut rng = rand::thread_rng();
-        self.election_timeout = Instant::now() + time::Duration::from_secs(rng.gen_range(4..=8));
+        self.election_timeout = Instant::now() + gen_rand_election_time();
     }
 
     #[allow(unused)]
@@ -729,8 +726,8 @@ where
             //     state.persistent_state.voted_for,
             //     state.persistent_state.log
             // );
-            //
-            // // u cant unlock a mutex!
+
+            // u cant unlock a mutex!
             // drop(state);
 
             let sleep_time = helpers::gen_rand_heartbeat_time();
@@ -756,6 +753,14 @@ where
             // NOTE: candidate methods
 
             let state = self.state.lock().await;
+            // if state.volatile_state.node_type == NodeRole::Leader {
+            //     warn!("is leader");
+            // } else {
+            //     debug!(
+            //         "recieved_leader_heartbeat {:?}",
+            //         state.recieved_leader_heartbeat
+            //     );
+            // }
             state
                 .recieved_leader_heartbeat
                 .store(false, std::sync::atomic::Ordering::Release);
@@ -768,11 +773,11 @@ pub mod helpers {
 
     pub fn gen_rand_heartbeat_time() -> std::time::Duration {
         let mut rng = rand::thread_rng();
-        std::time::Duration::from_millis(rng.gen_range(100..500))
+        std::time::Duration::from_millis(rng.gen_range(5..=10))
     }
 
     pub fn gen_rand_election_time() -> std::time::Duration {
         let mut rng = rand::thread_rng();
-        std::time::Duration::from_millis(rng.gen_range(6000..=10000))
+        std::time::Duration::from_millis(rng.gen_range(150..=300))
     }
 }

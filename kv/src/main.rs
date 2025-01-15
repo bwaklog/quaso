@@ -51,6 +51,8 @@ async fn main() {
         raft_clone.lock().await.tick().await;
     });
 
+    let sl = kv.storage.clone();
+
     tokio::spawn(async move {
         kv.generic_handler_interface().await;
     });
@@ -64,9 +66,11 @@ async fn main() {
     loop {
         let (stream, _) = listener.accept().await.unwrap();
         let client_tx = Arc::clone(&client_tx);
+        let sl_clone = sl.clone();
 
         debug!("{:?}", stream);
-        let client_tx = client_tx.lock().await;
-        let _ = client_tx.send(stream);
+        tokio::spawn(async move {
+            KVStore::handle_client(stream, sl_clone, client_tx).await;
+        });
     }
 }

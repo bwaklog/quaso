@@ -40,7 +40,7 @@ impl Clone for Pair {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     Set,
     Get,
@@ -172,11 +172,11 @@ impl StorageLayer {
 ///
 #[derive(Debug)]
 pub struct KVStore {
-    pub storage: StorageLayer,
+    pub storage: Arc<Mutex<StorageLayer>>,
     pub raft: Raft<Pair>,
     pub deliver_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<LogEntry<Pair>>>>,
-    pub client_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<TcpStream>>>,
-    pub client_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<TcpStream>>>,
+    pub client_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<Command>>>,
+    pub client_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<Command>>>,
 }
 
 impl KVStore {
@@ -190,7 +190,7 @@ impl KVStore {
         let deliver_rx = Arc::new(Mutex::new(deliver_rx));
 
         KVStore {
-            storage: StorageLayer::init_default().await,
+            storage: Arc::new(Mutex::new(StorageLayer::init_default().await)),
             raft: Raft::new_from_config(config, deliver_tx).await,
             deliver_rx,
             client_rx: Arc::new(Mutex::new(client_rx)),
@@ -202,10 +202,14 @@ impl KVStore {
         match message.command {
             server::log::Command::Set => {
                 self.storage
+                    .lock()
+                    .await
                     .set(message.value.key, message.value.val.unwrap())
                     .await
             }
-            server::log::Command::Remove => {}
+            server::log::Command::Remove => {
+                self.storage.lock().await.delete(message.value.key).await
+            }
         }
     }
 
@@ -230,11 +234,13 @@ impl KVStore {
 
         let client_rx = Arc::clone(&self.client_rx);
         let mut client_rx = client_rx.lock().await;
+
         loop {
             tokio::select! {
                 Some(client_message) = client_rx.recv() => {
                     // debug!("recieved a client message");
-                    self.handle_client(client_message).await;
+                    // self.handle_client(client_message).await;
+                    self.handle_cmd(client_message).await;
                 }
                 Some(raft_message) = deliver_rx.recv() => {
                     // debug!("recieved a raaft message: {:?}", raft_message);
@@ -245,31 +251,44 @@ impl KVStore {
         }
     }
 
-    pub async fn handle_client(&mut self, stream: TcpStream) {
+    pub async fn handle_client(
+        stream: TcpStream,
+        sl: Arc<Mutex<StorageLayer>>,
+        client_tx: Arc<Mutex<tokio::sync::mpsc::UnboundedSender<Command>>>,
+    ) {
         let mut stream = stream;
-        let mut buf = Vec::new();
 
-        match stream.read_buf(&mut buf).await {
-            Ok(_) => {
-                if buf.is_empty() {
-                    let _ = stream.shutdown().await;
-                    return;
+        loop {
+            let mut buf = Vec::new();
+
+            match stream.read_buf(&mut buf).await {
+                Ok(_) => {
+                    if buf.is_empty() {
+                        let _ = stream.shutdown().await;
+                        return;
+                    }
+                    let cmd = String::from_utf8(buf.clone()).unwrap();
+                    let parsed = Command::parse_command(cmd);
+
+                    if parsed.operation == Operation::Get {
+                        let mut sl_handler = sl.lock().await;
+                        let result = sl_handler.get(parsed.key.unwrap()).await;
+                        stream
+                            .write_all(format!("{:?}\n", result).as_bytes())
+                            .await
+                            .unwrap();
+                        stream.flush().await.unwrap();
+                    // debug!("recieved {:?}", parsed);
+                    } else {
+                        // this affects state
+                        let tx_handler = client_tx.lock().await;
+                        let _ = tx_handler.send(parsed);
+                    }
                 }
-                let cmd = String::from_utf8(buf.clone()).unwrap();
-                let parsed = Command::parse_command(cmd);
-
-                let result = self.handle_cmd(parsed.clone()).await;
-                stream
-                    .write_all(format!("{:?}\n", result).as_bytes())
-                    .await
-                    .unwrap();
-                stream.flush().await.unwrap();
-
-                // debug!("recieved {:?}", parsed);
-            }
-            Err(e) => {
-                warn!("{:?}", e);
-                stream.shutdown().await.unwrap();
+                Err(e) => {
+                    warn!("{:?}", e);
+                    stream.shutdown().await.unwrap();
+                }
             }
         }
     }
@@ -280,7 +299,7 @@ impl KVStore {
             // Opeartion::Get only interacts with the current
             // state of the db
             Operation::Get => {
-                return self.storage.get(cmd.key.unwrap()).await;
+                return self.storage.lock().await.get(cmd.key.unwrap()).await;
             }
             Operation::Invalid => {}
 
