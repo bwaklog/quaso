@@ -1,13 +1,13 @@
 metadata:
-  node_name: "foo"
-  node_id: 64
+  node_name: "grogu"
+  node_id: 16
 services:
     raft:
-        persist_file: "./kv/tmp/raft.state"
-        listiner_addr: "127.0.0.1:8080"
+        persist_file: "./tmp/raft.state"
+        listiner_addr: "grogu:8080"
         connections:
-            - "127.0.0.1:6060"
-            - "127.0.0.1:7070"
+            - "poseidon:8080"
+            - "hermes:8080"
     store:
-        server_addr: "127.0.0.1:3511"
+        server_addr: "grogu:6060"
         local_path: "./kv/tmp/"

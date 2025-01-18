@@ -2,12 +2,10 @@ all:
 	cargo c
 
 clean_state:
-	rm ./kv/tmp/*.state
+	find . -type f -name "*.state" | xargs rm
 
-inspect_state:
-	xxd ./kv/tmp/raft_a.state
-	xxd ./kv/tmp/raft_b.state
-	xxd ./kv/tmp/raft_c.state
+inspect:
+	find . -type f -name "*.state" -exec xxd {} \;
 
 run:
 	./target/release/kv -c ./kv/sample.yml

@@ -2,5 +2,6 @@
 .DS_Store
 /temp
 kv/tmp/
+tmp/
 *.state
 quaso_*
