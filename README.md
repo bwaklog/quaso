@@ -1,4 +1,4 @@
-# quaso
+# quaso 🥐
 
 ## Checklist for raft
 
@@ -16,26 +16,41 @@ nodes in a network?
 
 --- 
 
-Example with a KV
+## Running the example KV store 
 
-1. Create `YAML` configuration files for each of your nodes, a sample one can be found at `./kv/sample.yml`
-2. Build the KV Store 
+> The project can be fully deployed on a simple docker container, you can either pull the latest container from `bwaklog/quaso:latest` on docker hub or build it yourself. There is a `justfile` and a few sample machine configurations available at `./kv/data/` to get started
 
-```sh
-make release
+- (optional) create a docker network
+
+```bash
+sudo docker network create quaso-test
 ```
 
-3. Run the server
+- building and running the container
 
-```sh 
-./quaso_server -c ./kv/sample.yml
+```bash
+# build a quaso container with the `latest` tag
+just build latest
+
+# run a machine with hostname ABC which has a config at ./kv/data/ABC.yml
+just run latest ABC
+
+# run a clean container for starting a client
+just run_empty
+
+# both the run commands allow a configurable docker network name at the end
+just run latest ABC network_name
 ```
 
-4. Connect to a host with the client
+- execution within a container
 
+```bash
+# start a node
+quaso-server -c config.yml
 
-```sh
-./quaso_client -a grogu:6060
+# on a client container start the client by connecting to a leader,
+# the address is for the KV store and not the raft node address
+quaso-cli -a ABC:6060
 ```
 
 ![Example KV cluster](https://imgur.com/ElduCMX.jpg)

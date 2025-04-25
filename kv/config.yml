@@ -1,0 +1,13 @@
+metadata:
+  node_name: "node1"
+  node_id: 16
+services:
+    raft:
+        persist_file: "/tmp/raft.state"
+        listiner_addr: "node1:8080"
+        connections:
+            - "node2:8080"
+            - "node3:8080"
+    store:
+        server_addr: "node1:6060"
+        local_path: "/tmp/"

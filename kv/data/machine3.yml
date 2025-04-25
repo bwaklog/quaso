@@ -1,0 +1,14 @@
+metadata:
+  node_name: "machine3"
+  node_id: 64
+services:
+    raft:
+        persist_file: "/tmp/machine.state"
+        listiner_addr: "machine3:8080"
+        connections:
+            - "machine2:8080"
+            - "machine1:8080"
+    store:
+        server_addr: "machine3:6060"
+        local_path: "/tmp/"
+
