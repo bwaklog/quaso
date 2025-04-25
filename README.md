@@ -53,4 +53,4 @@ quaso-server -c config.yml
 quaso-cli -a ABC:6060
 ```
 
-![Example KV cluster](https://imgur.com/ElduCMX.jpg)
+![Example KV cluster](./resources/docker_cluster.png)
