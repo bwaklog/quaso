@@ -268,7 +268,7 @@ where
         }
     }
 
-    pub async fn append_entry(&mut self, value: T, command: Command) {
+    pub async fn append_entry(&mut self, value: T) {
         let mut state = self.state.lock().await;
 
         if state.volatile_state.node_type != NodeRole::Leader {
@@ -280,7 +280,6 @@ where
         }
 
         let entry = LogEntry {
-            command,
             value,
             term: state.persistent_state.node_term,
         };

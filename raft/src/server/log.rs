@@ -6,12 +6,6 @@ use super::state::NodeTerm;
 
 pub type LogIndex = usize;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum Command {
-    Set,
-    Remove,
-}
-
 pub trait Entry {
     fn deliver(&mut self);
 }
@@ -21,7 +15,6 @@ pub struct LogEntry<T>
 where
     T: Entry + Debug + Display + Clone,
 {
-    pub command: Command,
     pub value: T,
     pub term: NodeTerm,
 }
@@ -32,7 +25,6 @@ where
 {
     fn clone(&self) -> Self {
         LogEntry {
-            command: self.command.clone(),
             term: self.term,
             value: self.value.clone(),
         }
@@ -43,12 +35,8 @@ impl<T> LogEntry<T>
 where
     T: Entry + Debug + Display + Clone,
 {
-    pub fn new(command: Command, value: T, term: NodeTerm) -> Self {
-        LogEntry {
-            command,
-            value,
-            term,
-        }
+    pub fn new(value: T, term: NodeTerm) -> Self {
+        LogEntry { value, term }
     }
 }
 
@@ -56,7 +44,7 @@ where
 mod generic_serialization {
     use std::fmt::{Debug, Display};
 
-    use super::{Command, LogEntry};
+    use super::LogEntry;
     use serde::{Deserialize, Serialize};
 
     use super::Entry;
@@ -92,7 +80,6 @@ mod generic_serialization {
     #[test]
     fn serialization() {
         let single_entry: LogEntry<Pair<String, String>> = LogEntry {
-            command: Command::Set,
             value: Pair {
                 key: "hello".to_string(),
                 val: "world".to_string(),
@@ -109,7 +96,6 @@ mod generic_serialization {
     #[test]
     fn deserialize_generic() {
         let entry_string_string: LogEntry<Pair<String, String>> = LogEntry {
-            command: Command::Set,
             value: Pair {
                 key: "hello".to_string(),
                 val: "world".to_string(),

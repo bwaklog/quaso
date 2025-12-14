@@ -531,7 +531,7 @@ mod rpc_tests {
     };
 
     use crate::server::{
-        log::{Command, LogEntry},
+        log::LogEntry,
         rpc::{AppendEntriesRequest, ElectionVoteRequest, PingRequest},
     };
     use serde::{Deserialize, Serialize};
@@ -643,8 +643,8 @@ mod rpc_tests {
     #[test]
     fn serialize_request() {
         let log: Vec<LogEntry<Pair<u64, String>>> = vec![
-            LogEntry::new(Command::Set, Pair::new(64, "viola".to_string()), 1),
-            LogEntry::new(Command::Set, Pair::new(32, "hola".to_string()), 1),
+            LogEntry::new(Pair::new(64, "viola".to_string()), 1),
+            LogEntry::new(Pair::new(32, "hola".to_string()), 1),
         ];
 
         let append_rpc: AppendEntriesRequest<Pair<u64, String>> = AppendEntriesRequest {
